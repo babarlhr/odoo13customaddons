@@ -1,7 +1,7 @@
 <odoo>
 	<data>
 	
-	    <record id="ms_report_stock_form_view" model="ir.ui.view">
+	    <record id="apn_report_stock_form_view" model="ir.ui.view">
 			<field name="name">apn.report.stock.form</field>
 			<field name="model">apn.report.stock</field>
 			<field name="type">form</field>
