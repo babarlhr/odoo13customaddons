@@ -56,7 +56,7 @@ class ReportStock(models.TransientModel):
     def _get_internal_transfer_locations(self):
         pass
 
-    def _set_excel_headers(self, workbook):
+    def _set_excel_headers(self, worksheet):
         pass
 
     def _get_storable_Prodcuts(self, product_ids=None):
@@ -115,69 +115,7 @@ class ReportStock(models.TransientModel):
         print("Tuples", tuple(location_ids))
         return tuple(purchase_locations)
 
-    def _write_headers(self):
-        pass
-
-    def _get_available_Qty(self, startDate):
-        product_context = dict(request.env.context, to_date=startDate)
-        ProductCategory = request.env['product.public.category']
-
-        # if category:
-        category = ProductCategory.browse().exists()
-
-        attrib_list = request.httprequest.args.getlist('attrib')
-        attrib_values = [[int(x) for x in v.split("-")] for v in attrib_list if v]
-        attrib_set = {v[1] for v in attrib_values}
-
-
-    def print_excel_report(self):
-
-        # getting data from user form
-        data = self.read()[0]
-        product_ids = data['product_ids']
-        start_date = data['start_date']
-        end_date = data['end_date']
-
-        # Report Name
-        date_string = self.get_default_date_model().strftime("%Y-%m-%d")
-        report_name = 'Stock Report'
-        filename = '%s %s' % (report_name, date_string)
-
-        # Validation of User provided data
-        self._validate_data(product_ids, start_date, end_date)
-
-        purchase_locations = self._get_locations('supplier')
-        sales_Locations = self._get_locations('customer')
-        scrap_location  = self._get_locations('inventory', True)
-
-        Inventory_Adjustment =self ._get_locations('')
-
-
-
-        # Get Related Data
-
-        query = self._get_query()
-
-        datetime_string = self.get_default_date_model().strftime("%Y-%m-%d %H:%M:%S")
-        date_string = self.get_default_date_model().strftime("%Y-%m-%d")
-        report_name = 'Stock Report'
-        filename = '%s %s' % (report_name, date_string)
-
-        product_ids = self.env['product.product'].search([('id', 'in', product_ids)])
-        product_ids = [prod.id for prod in product_ids]
-        where_product_ids = " 1=1 "
-        where_product_ids2 = " 1=1 "
-        if product_ids:
-            where_product_ids = " quant.product_id in %s" % str(tuple(product_ids)).replace(',)', ')')
-            where_product_ids2 = " product_id in %s" % str(tuple(product_ids)).replace(',)', ')')
-        location_ids2 = self.env['stock.location'].search([('usage', '=', 'internal')])
-        ids_location = [loc.id for loc in location_ids2]
-        where_location_ids = " quant.location_id in %s" % str(tuple(ids_location)).replace(',)', ')')
-        where_location_ids2 = " location_id in %s" % str(tuple(ids_location)).replace(',)', ')')
-        # if location_ids:
-        #     where_location_ids = " quant.location_id in %s" % str(tuple(location_ids)).replace(',)', ')')
-        #     where_location_ids2 = " location_id in %s" % str(tuple(location_ids)).replace(',)', ')')
-
+    def _write_headers(self, report_name):
         columns_Headings = [
             ('No', 5, 'no', 'no'),
             ('Product', 30, 'char', 'char'),
@@ -189,56 +127,10 @@ class ReportStock(models.TransientModel):
             ('Available', 20, 'float', 'float'),
             ('Reserved', 20, 'float', 'float'),
         ]
-
-        datetime_format = '%Y-%m-%d %H:%M:%S'
-        utc = datetime.now().strftime(datetime_format)
-        utc = datetime.strptime(utc, datetime_format)
-        tz = self.get_default_date_model().strftime(datetime_format)
-        tz = datetime.strptime(tz, datetime_format)
-        duration = tz - utc
-        hours = duration.seconds / 60 / 60
-        if hours > 1 or hours < 1:
-            hours = str(hours) + ' hours'
-        else:
-            hours = str(hours) + ' hour'
-
-        query = """
-            SELECT 
-                prod_tmpl.name as product, 
-                categ.name as prod_categ, 
-                loc.complete_name as location,
-                quant.in_date + interval '%s' as date_in, 
-                date_part('days', now() - (quant.in_date + interval '%s')) as aging,
-                sum(quant.quantity) as total_product, 
-                sum(quant.quantity-quant.reserved_quantity) as stock, 
-                sum(quant.reserved_quantity) as reserved
-            FROM 
-                stock_quant quant
-            LEFT JOIN 
-                stock_location loc on loc.id=quant.location_id
-            LEFT JOIN 
-                product_product prod on prod.id=quant.product_id
-            LEFT JOIN 
-                product_template prod_tmpl on prod_tmpl.id=prod.product_tmpl_id
-            LEFT JOIN 
-                product_category categ on categ.id=prod_tmpl.categ_id
-            WHERE 
-                %s and %s
-            GROUP BY 
-                product, prod_categ, location, date_in
-            ORDER BY 
-                date_in
-        """
-        print(query % (hours, hours, where_product_ids, where_location_ids))
-
-        self._cr.execute(query % (hours, hours, where_product_ids, where_location_ids))
-        result = self._cr.fetchall()
-
         fp = BytesIO()
         workbook = xlsxwriter.Workbook(fp)
-        wbf, workbook = self.add_workbook_format(workbook)
-
-        worksheet = workbook.add_worksheet(report_name)
+        wbf, self.workbook = self.add_workbook_format(workbook)
+        worksheet = self.workbook.add_worksheet(report_name)
         worksheet.merge_range('A2:I3', report_name, wbf['title_doc'])
 
         row = 5
@@ -256,6 +148,80 @@ class ReportStock(models.TransientModel):
         row += 1
         row1 = row
         no = 1
+        pass
+
+    def _get_available_Qty(self, startDate):
+        product_context = dict(request.env.context, to_date=startDate)
+        ProductCategory = request.env['product.public.category']
+
+        # if category:
+        category = ProductCategory.browse().exists()
+
+        attrib_list = request.httprequest.args.getlist('attrib')
+        attrib_values = [[int(x) for x in v.split("-")] for v in attrib_list if v]
+        attrib_set = {v[1] for v in attrib_values}
+
+    def print_excel_report(self):
+
+        # ########################### getting data from user form #####################
+        data = self.read()[0]
+        product_ids = data['product_ids']
+        start_date = data['start_date']
+        end_date = data['end_date']
+        # #############################################################################
+
+        # ############################# Report Name ##################################
+        datetime_string = self.get_default_date_model().strftime("%Y-%m-%d %H:%M:%S")
+        date_string = self.get_default_date_model().strftime("%Y-%m-%d")
+        report_name = 'Stock Report'
+        filename = '%s %s' % (report_name, date_string)
+        # ############################################################################
+
+        # Validation of User provided data
+        self._validate_data(product_ids, start_date, end_date)
+
+        purchase_locations = self._get_locations('supplier')
+        sales_Locations = self._get_locations('customer')
+        scrap_location = self._get_locations('inventory', True)
+
+        Inventory_Adjustment = self._get_locations('')
+
+        # Get Related Data
+
+        query = self._get_query()
+
+        product_ids = self.env['product.product'].search([('id', 'in', product_ids)])
+        product_ids = [prod.id for prod in product_ids]
+        where_product_ids = " 1=1 "
+        where_product_ids2 = " 1=1 "
+        if product_ids:
+            where_product_ids = " quant.product_id in %s" % str(tuple(product_ids)).replace(',)', ')')
+            where_product_ids2 = " product_id in %s" % str(tuple(product_ids)).replace(',)', ')')
+        location_ids2 = self.env['stock.location'].search([('usage', '=', 'internal')])
+        ids_location = [loc.id for loc in location_ids2]
+        where_location_ids = " quant.location_id in %s" % str(tuple(ids_location)).replace(',)', ')')
+        where_location_ids2 = " location_id in %s" % str(tuple(ids_location)).replace(',)', ')')
+        # if location_ids:
+        #     where_location_ids = " quant.location_id in %s" % str(tuple(location_ids)).replace(',)', ')')
+        #     where_location_ids2 = " location_id in %s" % str(tuple(location_ids)).replace(',)', ')')
+
+        datetime_format = '%Y-%m-%d %H:%M:%S'
+        utc = datetime.now().strftime(datetime_format)
+        utc = datetime.strptime(utc, datetime_format)
+        tz = self.get_default_date_model().strftime(datetime_format)
+        tz = datetime.strptime(tz, datetime_format)
+        duration = tz - utc
+        hours = duration.seconds / 60 / 60
+        if hours > 1 or hours < 1:
+            hours = str(hours) + ' hours'
+        else:
+            hours = str(hours) + ' hour'
+
+        query = self._get_query()
+        # print(query % (hours, hours, where_product_ids, where_location_ids))
+
+        self._cr.execute(query % (hours, hours, where_product_ids, where_location_ids))
+        result = self._cr.fetchall()
 
         column_float_number = {}
         for res in result:
