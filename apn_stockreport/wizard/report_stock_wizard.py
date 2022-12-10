@@ -22,21 +22,119 @@ class ReportStock(models.TransientModel):
     start_date = fields.Date(string='Start Date')
     end_date = fields.Date(string='End Date')
 
-    locations = ()
-    fp = BytesIO()
-    workbook = xlsxwriter.Workbook(fp)
+    # temporary workbook object to access anywhere in all methods
+    fp = []
+    workbook = []
 
-    # @api.model
-    # def __init__(cr, abc):
-    #     # pass
-    #
-    #     fp = BytesIO()
-    #     workbook = xlsxwriter.Workbook(fp)
-    #     super().__init__(pool=abc, cr=cr)
+    def print_excel_report(self):
+        # ########################### getting data from user form #####################
+        data = self.read()[0]
+        product_ids = data['product_ids']
+        # product_ids = [prod.id for prod in products]
+        start_date = data['start_date']
+        end_date = data['end_date']
+        datetime_format = '%Y-%m-%d %H:%M:%S'
+
+        # ############################# Report Name ##################################
+        datetime_string = self.get_default_date_model().strftime("%Y-%m-%d %H:%M:%S")
+        date_string = self.get_default_date_model().strftime("%Y-%m-%d")
+        report_name = 'Stock Report'
+        filename = '%s %s' % (report_name, date_string)
+
+        # ############################ Validation of User provided data ##############
+        # ############################ Writing workbook with headers #################
+        # ############################ And Cells format styles to sheet ##############
+        self._validate_data(product_ids, start_date, end_date)
+        self.fp = BytesIO()
+        self.workbook = xlsxwriter.Workbook(self.fp, {'in_memory': True})
+        worksheet, wbf = self._write_headers(report_name, start_date, end_date)
+        cell_format = self._get_cell_format(wbf)
+
+        # ########################### Database Operations Get Related Data ###########
+        query = self._get_query()
+        # print(query % (hours, hours, where_product_ids, where_location_ids))
+        # self._cr.execute(query % (hours, hours, where_product_ids, where_location_ids))
+        # result = self._cr.fetchall()
+        result = (('style code1', 20, 10, 30, 12, 11, 23, 45,), ('style code2', 30, 20, 10, 15, 14, 73, 35,),)
+
+        # #############################  Writing Data to Excel ########################
+        self._write_worksheet_data(worksheet, cell_format, result)
+
+        self.workbook.close()
+        out = base64.b64encode(self.fp.getvalue(), altchars=None)
+        self.write({'datas': out, 'datas_fname': filename})
+        self.fp.close()
+        filename += '%2Exlsx'
+
+        return {
+            'type': 'ir.actions.act_url',
+            'target': 'new',
+            'url': 'web/content/?model=' + self._name + '&id=' + str(
+                self.id) + '&field=datas&download=true&filename=' + filename,
+        }
+
+    def _write_headers(self, report_name, start_date, end_date):
+        columns_Headings = [
+            ('No', 5),
+            ('Style Code', 30),
+            ('Opening Balance', 20),
+            ('Received from Production', 30),
+            ('Sales', 30),
+            ('Returns', 30),
+            ('Give Away/Marketing', 30),
+            ('Scrap', 30),
+            ('Reserved', 20),
+            ('Closing Balance', 20)
+        ]
+
+        wbf, self.workbook = self.add_workbook_format(self.workbook)
+        # if 'Stock Report' not in self.workbook.:
+        worksheet = self.workbook.add_worksheet(report_name)
+        print('worksheet=', worksheet)
+        print('workbook=', self.workbook)
+        worksheet.merge_range('A2:L3', report_name, wbf['title_doc'])
+
+        worksheet.write(4, 0, 'From Date', wbf['content'])
+        worksheet.write(5, 0, 'To date', wbf['content'])
+        worksheet.write(4, 1, start_date.strftime('%Y-%m-%d %H:%M:%S'), wbf['content_datetime'])
+        worksheet.write(5, 1, end_date.strftime('%Y-%m-%d %H:%M:%S'), wbf['content_datetime'])
+
+        row = 9
+        col = 0
+        for column in columns_Headings:
+            column_name = column[0]
+            column_width = column[1]
+            worksheet.set_column(col, col, column_width)
+            worksheet.write(row, col, column_name, wbf['header_orange'])
+            col += 1
+
+        return worksheet, wbf
 
     @api.model
     def get_default_date_model(self):
         return pytz.UTC.localize(datetime.now()).astimezone(timezone(self.env.user.tz or 'UTC'))
+
+    @staticmethod
+    def _write_worksheet_data(worksheet,cell_format, result):
+        row = 10
+        no = 1
+        for res in result:
+            for col_number in range(10):
+                if col_number == 0:
+                    worksheet.write(row, col_number, no, cell_format[0])  # Writing Serial Numbers
+                elif col_number == 9:  # then Formula Cell.write formula instead
+                    cell_row = row + 1  # to change from (int,row,int column) to A1,B1 cell format
+                    worksheet.write_formula('J%s' % cell_row,
+                                            '=C%s+D%s-E%s+F%s-G%s-H%s-I%s'
+                                            % (cell_row, cell_row, cell_row, cell_row, cell_row, cell_row, cell_row)
+                                            )
+                    pass
+                else:
+                    # starting from second column Corresponding first value of res.
+                    # first two columns are nos and style name
+                    worksheet.write(row, col_number, res[col_number - 1], cell_format[col_number - 1])
+            row += 1
+            no += 1
 
     @staticmethod
     def _validate_data(product_ids, start_date, end_date):
@@ -56,9 +154,6 @@ class ReportStock(models.TransientModel):
     def _get_internal_transfer_locations(self):
         pass
 
-    def _set_excel_headers(self, worksheet):
-        pass
-
     def _get_storable_Prodcuts(self, product_ids=None):
         if not product_ids:
             product_ids = self.env['product.product'].search().id
@@ -68,6 +163,13 @@ class ReportStock(models.TransientModel):
         return storable_components
 
     def _get_query(self):
+
+        purchase_locations = self._get_locations('supplier')
+        sales_Locations = self._get_locations('customer')
+        scrap_location = self._get_locations('inventory', True)
+
+        Inventory_Adjustment = self._get_locations('')
+
         query = """
                    SELECT 
                        prod_tmpl.name as product, 
@@ -115,218 +217,77 @@ class ReportStock(models.TransientModel):
         print("Tuples", tuple(location_ids))
         return tuple(purchase_locations)
 
-    def _write_headers(self, report_name):
-        columns_Headings = [
-            ('No', 5, 'no', 'no'),
-            ('Product', 30, 'char', 'char'),
-            ('Product Category', 20, 'char', 'char'),
-            ('Location', 30, 'char', 'char'),
-            ('Incoming Date', 20, 'datetime', 'char'),
-            ('Stock Age', 20, 'number', 'char'),
-            ('Total Stock', 20, 'float', 'float'),
-            ('Available', 20, 'float', 'float'),
-            ('Reserved', 20, 'float', 'float'),
-        ]
-        fp = BytesIO()
-        workbook = xlsxwriter.Workbook(fp)
-        wbf, self.workbook = self.add_workbook_format(workbook)
-        worksheet = self.workbook.add_worksheet(report_name)
-        worksheet.merge_range('A2:I3', report_name, wbf['title_doc'])
+    @staticmethod
+    def _get_cell_format(wbf):
+        format_tuple = (wbf['content'], wbf['content'], wbf['content'], wbf['content'],
+                        wbf['content'], wbf['content'], wbf['content'], wbf['content'],
+                        wbf['content'], wbf['content'])
+        # number
 
-        row = 5
+        return format_tuple
 
-        col = 0
-        for column in columns_Headings:
-            column_name = column[0]
-            column_width = column[1]
-            column_type = column[2]
-            worksheet.set_column(col, col, column_width)
-            worksheet.write(row - 1, col, column_name, wbf['header_orange'])
-
-            col += 1
-
-        row += 1
-        row1 = row
-        no = 1
-        pass
-
-    def _get_available_Qty(self, startDate):
-        product_context = dict(request.env.context, to_date=startDate)
-        ProductCategory = request.env['product.public.category']
+    def _get_available_qty(self, start_date):
+        product_context = dict(request.env.context, to_date=start_date)
+        product_category = request.env['product.public.category']
 
         # if category:
-        category = ProductCategory.browse().exists()
+        category = product_category.browse().exists()
 
         attrib_list = request.httprequest.args.getlist('attrib')
         attrib_values = [[int(x) for x in v.split("-")] for v in attrib_list if v]
         attrib_set = {v[1] for v in attrib_values}
 
-    def print_excel_report(self):
-
-        # ########################### getting data from user form #####################
-        data = self.read()[0]
-        product_ids = data['product_ids']
-        start_date = data['start_date']
-        end_date = data['end_date']
-        # #############################################################################
-
-        # ############################# Report Name ##################################
-        datetime_string = self.get_default_date_model().strftime("%Y-%m-%d %H:%M:%S")
-        date_string = self.get_default_date_model().strftime("%Y-%m-%d")
-        report_name = 'Stock Report'
-        filename = '%s %s' % (report_name, date_string)
-        # ############################################################################
-
-        # Validation of User provided data
-        self._validate_data(product_ids, start_date, end_date)
-
-        purchase_locations = self._get_locations('supplier')
-        sales_Locations = self._get_locations('customer')
-        scrap_location = self._get_locations('inventory', True)
-
-        Inventory_Adjustment = self._get_locations('')
-
-        # Get Related Data
-
-        query = self._get_query()
-
-        product_ids = self.env['product.product'].search([('id', 'in', product_ids)])
-        product_ids = [prod.id for prod in product_ids]
-        where_product_ids = " 1=1 "
-        where_product_ids2 = " 1=1 "
-        if product_ids:
-            where_product_ids = " quant.product_id in %s" % str(tuple(product_ids)).replace(',)', ')')
-            where_product_ids2 = " product_id in %s" % str(tuple(product_ids)).replace(',)', ')')
-        location_ids2 = self.env['stock.location'].search([('usage', '=', 'internal')])
-        ids_location = [loc.id for loc in location_ids2]
-        where_location_ids = " quant.location_id in %s" % str(tuple(ids_location)).replace(',)', ')')
-        where_location_ids2 = " location_id in %s" % str(tuple(ids_location)).replace(',)', ')')
-        # if location_ids:
-        #     where_location_ids = " quant.location_id in %s" % str(tuple(location_ids)).replace(',)', ')')
-        #     where_location_ids2 = " location_id in %s" % str(tuple(location_ids)).replace(',)', ')')
-
-        datetime_format = '%Y-%m-%d %H:%M:%S'
-        utc = datetime.now().strftime(datetime_format)
-        utc = datetime.strptime(utc, datetime_format)
-        tz = self.get_default_date_model().strftime(datetime_format)
-        tz = datetime.strptime(tz, datetime_format)
-        duration = tz - utc
-        hours = duration.seconds / 60 / 60
-        if hours > 1 or hours < 1:
-            hours = str(hours) + ' hours'
-        else:
-            hours = str(hours) + ' hour'
-
-        query = self._get_query()
-        # print(query % (hours, hours, where_product_ids, where_location_ids))
-
-        self._cr.execute(query % (hours, hours, where_product_ids, where_location_ids))
-        result = self._cr.fetchall()
-
-        column_float_number = {}
-        for res in result:
-            col = 0
-            for column in columns_Headings:
-                column_name = column[0]
-                column_width = column[1]
-                column_type = column[2]
-                if column_type == 'char':
-                    col_value = res[col - 1] if res[col - 1] else ''
-                    wbf_value = wbf['content']
-                elif column_type == 'no':
-                    col_value = no
-                    wbf_value = wbf['content']
-                elif column_type == 'datetime':
-                    col_value = res[col - 1].strftime('%Y-%m-%d %H:%M:%S') if res[col - 1] else ''
-                    wbf_value = wbf['content']
-                else:
-                    col_value = res[col - 1] if res[col - 1] else 0
-                    if column_type == 'float':
-                        wbf_value = wbf['content_float']
-                    else:  # number
-                        wbf_value = wbf['content_number']
-                    column_float_number[col] = column_float_number.get(col, 0) + col_value
-
-                worksheet.write(row - 1, col, col_value, wbf_value)
-
-                col += 1
-
-            row += 1
-            no += 1
-
-        worksheet.merge_range('A%s:B%s' % (row, row), 'Grand Total', wbf['total_orange'])
-        for x in range(len(columns_Headings)):
-            if x in (0, 1):
-                continue
-            column_type = columns_Headings[x][3]
-            if column_type == 'char':
-                worksheet.write(row - 1, x, '', wbf['total_orange'])
-            else:
-                if column_type == 'float':
-                    wbf_value = wbf['total_float_orange']
-                else:  # number
-                    wbf_value = wbf['total_number_orange']
-                if x in column_float_number:
-                    worksheet.write(row - 1, x, column_float_number[x], wbf_value)
-                else:
-                    worksheet.write(row - 1, x, 0, wbf_value)
-
-        worksheet.write('A%s' % (row + 2), 'Date %s (%s)' % (datetime_string, self.env.user.tz or 'UTC'),
-                        wbf['content_datetime'])
-        workbook.close()
-
-        # out = base64.b16encode(fp.getvalue())
-        out1 = fp.getvalue()
-        out = base64.b64encode(out1, altchars=None)
-        self.write({'datas': out, 'datas_fname': filename})
-        fp.close()
-        filename += '%2Exlsx'
-
-        return {
-            'type': 'ir.actions.act_url',
-            'target': 'new',
-            'url': 'web/content/?model=' + self._name + '&id=' + str(
-                self.id) + '&field=datas&download=true&filename=' + filename,
-        }
+    @staticmethod
+    def _get_column_in(column, values):
+        string_value = str(tuple(values)).replace(',)', ')')
+        return f" {column} in {string_value}"
 
     def add_workbook_format(self, workbook):
+
+        ### Define colors
         colors = {
             'white_orange': '#FFFFDB',
             'orange': '#FFC300',
             'red': '#FF0000',
             'yellow': '#F6FA03',
+            'white': '#FBFBFD',
         }
 
+        # Define allExcel formats in dictionary to use in while writing cell values
         wbf = {}
-        wbf['header'] = workbook.add_format(
-            {'bold': 1, 'align': 'center', 'bg_color': '#FFFFDB', 'font_color': '#000000', 'font_name': 'Georgia'})
-        wbf['header'].set_border()
 
+        # Format 1
+        wbf['header'] = workbook.add_format(
+            {'bold': 1, 'align': 'center',
+             'bg_color': '#FFFFDB', 'font_color': '#000000',
+             'font_name': 'Georgia'}).set_border()
+
+        # Format 2
         wbf['header_orange'] = workbook.add_format(
             {'bold': 1, 'align': 'center', 'bg_color': colors['orange'], 'font_color': '#000000',
              'font_name': 'Georgia'})
         wbf['header_orange'].set_border()
 
-        wbf['header_yellow'] = workbook.add_format(
-            {'bold': 1, 'align': 'center', 'bg_color': colors['yellow'], 'font_color': '#000000',
-             'font_name': 'Georgia'})
-        wbf['header_yellow'].set_border()
-
+        # Format 3
         wbf['header_no'] = workbook.add_format(
             {'bold': 1, 'align': 'center', 'bg_color': '#FFFFDB', 'font_color': '#000000', 'font_name': 'Georgia'})
         wbf['header_no'].set_border()
         wbf['header_no'].set_align('vcenter')
 
+        # Format 4
         wbf['footer'] = workbook.add_format({'align': 'left', 'font_name': 'Georgia'})
 
+        # Format 5
         wbf['content_datetime'] = workbook.add_format({'num_format': 'yyyy-mm-dd hh:mm:ss', 'font_name': 'Georgia'})
         wbf['content_datetime'].set_left()
         wbf['content_datetime'].set_right()
 
+        # Format 6
         wbf['content_date'] = workbook.add_format({'num_format': 'yyyy-mm-dd', 'font_name': 'Georgia'})
         wbf['content_date'].set_left()
         wbf['content_date'].set_right()
 
+        # Format 7
         wbf['title_doc'] = workbook.add_format({
             'bold': True,
             'align': 'center',
@@ -335,25 +296,31 @@ class ReportStock(models.TransientModel):
             'font_name': 'Georgia',
         })
 
+        # Format 8
         wbf['company'] = workbook.add_format({'align': 'left', 'font_name': 'Georgia'})
         wbf['company'].set_font_size(11)
 
+        # Format 9
         wbf['content'] = workbook.add_format()
         wbf['content'].set_left()
         wbf['content'].set_right()
 
+        # Format 10
         wbf['content_float'] = workbook.add_format({'align': 'right', 'num_format': '#,##0.00', 'font_name': 'Georgia'})
         wbf['content_float'].set_right()
         wbf['content_float'].set_left()
 
+        # Format 11
         wbf['content_number'] = workbook.add_format({'align': 'right', 'num_format': '#,##0', 'font_name': 'Georgia'})
         wbf['content_number'].set_right()
         wbf['content_number'].set_left()
 
+        # Format 12
         wbf['content_percent'] = workbook.add_format({'align': 'right', 'num_format': '0.00%', 'font_name': 'Georgia'})
         wbf['content_percent'].set_right()
         wbf['content_percent'].set_left()
 
+        # Format 13
         wbf['total_float'] = workbook.add_format(
             {'bold': 1, 'bg_color': colors['white_orange'], 'align': 'right', 'num_format': '#,##0.00',
              'font_name': 'Georgia'})
@@ -362,6 +329,7 @@ class ReportStock(models.TransientModel):
         wbf['total_float'].set_left()
         wbf['total_float'].set_right()
 
+        # Format 14
         wbf['total_number'] = workbook.add_format(
             {'align': 'right', 'bg_color': colors['white_orange'], 'bold': 1, 'num_format': '#,##0',
              'font_name': 'Georgia'})
@@ -370,6 +338,7 @@ class ReportStock(models.TransientModel):
         wbf['total_number'].set_left()
         wbf['total_number'].set_right()
 
+        # Format 16
         wbf['total'] = workbook.add_format(
             {'bold': 1, 'bg_color': colors['white_orange'], 'align': 'center', 'font_name': 'Georgia'})
         wbf['total'].set_left()
@@ -377,6 +346,7 @@ class ReportStock(models.TransientModel):
         wbf['total'].set_top()
         wbf['total'].set_bottom()
 
+        # Format 17
         wbf['total_float_yellow'] = workbook.add_format(
             {'bold': 1, 'bg_color': colors['yellow'], 'align': 'right', 'num_format': '#,##0.00',
              'font_name': 'Georgia'})
@@ -385,6 +355,7 @@ class ReportStock(models.TransientModel):
         wbf['total_float_yellow'].set_left()
         wbf['total_float_yellow'].set_right()
 
+        # Format 18
         wbf['total_number_yellow'] = workbook.add_format(
             {'align': 'right', 'bg_color': colors['yellow'], 'bold': 1, 'num_format': '#,##0', 'font_name': 'Georgia'})
         wbf['total_number_yellow'].set_top()
@@ -392,6 +363,7 @@ class ReportStock(models.TransientModel):
         wbf['total_number_yellow'].set_left()
         wbf['total_number_yellow'].set_right()
 
+        # Format 19
         wbf['total_yellow'] = workbook.add_format(
             {'bold': 1, 'bg_color': colors['yellow'], 'align': 'center', 'font_name': 'Georgia'})
         wbf['total_yellow'].set_left()
@@ -399,6 +371,7 @@ class ReportStock(models.TransientModel):
         wbf['total_yellow'].set_top()
         wbf['total_yellow'].set_bottom()
 
+        # Format 20
         wbf['total_float_orange'] = workbook.add_format(
             {'bold': 1, 'bg_color': colors['orange'], 'align': 'right', 'num_format': '#,##0.00',
              'font_name': 'Georgia'})
@@ -407,6 +380,7 @@ class ReportStock(models.TransientModel):
         wbf['total_float_orange'].set_left()
         wbf['total_float_orange'].set_right()
 
+        # Format 21
         wbf['total_number_orange'] = workbook.add_format(
             {'align': 'right', 'bg_color': colors['orange'], 'bold': 1, 'num_format': '#,##0', 'font_name': 'Georgia'})
         wbf['total_number_orange'].set_top()
@@ -414,6 +388,7 @@ class ReportStock(models.TransientModel):
         wbf['total_number_orange'].set_left()
         wbf['total_number_orange'].set_right()
 
+        # Format 22
         wbf['total_orange'] = workbook.add_format(
             {'bold': 1, 'bg_color': colors['orange'], 'align': 'center', 'font_name': 'Georgia'})
         wbf['total_orange'].set_left()
@@ -421,17 +396,20 @@ class ReportStock(models.TransientModel):
         wbf['total_orange'].set_top()
         wbf['total_orange'].set_bottom()
 
-        wbf['header_detail_space'] = workbook.add_format({'font_name': 'Georgia'})
-        wbf['header_detail_space'].set_left()
-        wbf['header_detail_space'].set_right()
-        wbf['header_detail_space'].set_top()
-        wbf['header_detail_space'].set_bottom()
-
+        # Format 23
         wbf['header_detail'] = workbook.add_format({'bg_color': '#E0FFC2', 'font_name': 'Georgia'})
         wbf['header_detail'].set_left()
         wbf['header_detail'].set_right()
         wbf['header_detail'].set_top()
         wbf['header_detail'].set_bottom()
+
+        wbf['number'] = workbook.add_format(
+            {'bg_color': colors['white_orange'], 'align': 'right', 'num_format': '0',
+             'font_name': 'Georgia', 'border': 2})
+        wbf['total_float'].set_top()
+        wbf['total_float'].set_bottom()
+        wbf['total_float'].set_left()
+        wbf['total_float'].set_right()
 
         return wbf, workbook
 
