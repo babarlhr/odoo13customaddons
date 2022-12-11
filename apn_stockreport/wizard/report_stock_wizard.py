@@ -45,20 +45,22 @@ class ReportStock(models.TransientModel):
         # ############################ Writing workbook with headers #################
         # ############################ And Cells format styles to sheet ##############
         self._validate_data(product_ids, start_date, end_date)
+        products_variants = self._get_product_attributes_variants(product_ids)
+
         self.fp = BytesIO()
         self.workbook = xlsxwriter.Workbook(self.fp, {'in_memory': True})
         worksheet, wbf = self._write_headers(report_name, start_date, end_date)
         cell_format = self._get_cell_format(wbf)
 
         # ########################### Database Operations Get Related Data ###########
-        query = self._get_query()
+        query = self._get_query(product_ids, start_date, end_date)
         # print(query % (hours, hours, where_product_ids, where_location_ids))
         # self._cr.execute(query % (hours, hours, where_product_ids, where_location_ids))
         # result = self._cr.fetchall()
         result = (('style code1', 20, 10, 30, 12, 11, 23, 45,), ('style code2', 30, 20, 10, 15, 14, 73, 35,),)
 
         # #############################  Writing Data to Excel ########################
-        self._write_worksheet_data(worksheet, cell_format, result)
+        self._write_worksheet_data(worksheet, cell_format, result,products_variants)
 
         self.workbook.close()
         out = base64.b64encode(self.fp.getvalue(), altchars=None)
@@ -72,6 +74,16 @@ class ReportStock(models.TransientModel):
             'url': 'web/content/?model=' + self._name + '&id=' + str(
                 self.id) + '&field=datas&download=true&filename=' + filename,
         }
+
+    def _get_product_attributes_variants(self, product_ids):
+        products_with_attribute = self.env['product.product'].search([('id', 'in', product_ids)], order='id asc')
+        products_attributes = {} # Store Sorted product with variant names and product names
+        for product in products_with_attribute:
+            variant = product.product_template_attribute_value_ids._get_combination_name()
+            product_name_with_variant = variant and "%s (%s)" % (product.name, variant) or product.name
+            product_info = (product.id, variant, product_name_with_variant)
+            products_attributes[product.id] = product_info
+        return products_attributes
 
     def _write_headers(self, report_name, start_date, end_date):
         columns_Headings = [
@@ -87,11 +99,9 @@ class ReportStock(models.TransientModel):
             ('Closing Balance', 20)
         ]
 
-        wbf, self.workbook = self.add_workbook_format(self.workbook)
+        wbf, self.workbook = self._add_workbook_format(self.workbook)
         # if 'Stock Report' not in self.workbook.:
         worksheet = self.workbook.add_worksheet(report_name)
-        print('worksheet=', worksheet)
-        print('workbook=', self.workbook)
         worksheet.merge_range('A2:L3', report_name, wbf['title_doc'])
 
         worksheet.write(4, 0, 'From Date', wbf['content'])
@@ -115,7 +125,7 @@ class ReportStock(models.TransientModel):
         return pytz.UTC.localize(datetime.now()).astimezone(timezone(self.env.user.tz or 'UTC'))
 
     @staticmethod
-    def _write_worksheet_data(worksheet,cell_format, result):
+    def _write_worksheet_data(worksheet, cell_format, result, products_variants):
         row = 10
         no = 1
         for res in result:
@@ -154,7 +164,7 @@ class ReportStock(models.TransientModel):
     def _get_internal_transfer_locations(self):
         pass
 
-    def _get_storable_Prodcuts(self, product_ids=None):
+    def _get_storable_products(self, product_ids=None):
         if not product_ids:
             product_ids = self.env['product.product'].search().id
         print("Product ids = ", product_ids)
@@ -162,42 +172,40 @@ class ReportStock(models.TransientModel):
             [('id', 'in', list(product_ids)), ('type', '=', 'product')])
         return storable_components
 
-    def _get_query(self):
+    @staticmethod
+    def _get_query_available_reserved(products_ids_in, start_date_string, end_date_string):
+        query = f"""select prod.id AS Prod_id,
+                            SUM(quant.quantity)  AS opening_balance, --On Hand
+                            SUM(quant.reserved_quantity) AS Reserved --reserved
+                            FROM product_product prod
+                            LEFT JOIN 
+                            stock_quant quant  on prod.id=quant.product_id
+                            LEFT JOIN 
+                            stock_location loc on loc.id=quant.location_id
+                            WHERE 
+                            (DATE(in_date)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
+                            AND loc.usage ='internal' 
+                            AND  prod.id in {products_ids_in}
+                            GROUP BY prod.id
+                            ORDER BY prod.id"""
+        return query
+
+    def _get_query(self, product_ids, start_date, end_date):
 
         purchase_locations = self._get_locations('supplier')
         sales_Locations = self._get_locations('customer')
         scrap_location = self._get_locations('inventory', True)
-
         Inventory_Adjustment = self._get_locations('')
+        products_ids_in = self._get_values_in(product_ids)
+        start_date_string = start_date.strftime("%Y-%m-%d")
+        end_date_string = end_date.strftime("%Y-%m-%d")
 
-        query = """
-                   SELECT 
-                       prod_tmpl.name as product, 
-                       categ.name as prod_categ, 
-                       loc.complete_name as location,
-                       quant.in_date + interval '%s' as date_in, 
-                       date_part('days', now() - (quant.in_date + interval '%s')) as aging,
-                       sum(quant.quantity) as total_product, 
-                       sum(quant.quantity-quant.reserved_quantity) as stock, 
-                       sum(quant.reserved_quantity) as reserved
-                   FROM 
-                       stock_quant quant
-                   LEFT JOIN 
-                       stock_location loc on loc.id=quant.location_id
-                   LEFT JOIN 
-                       product_product prod on prod.id=quant.product_id
-                   LEFT JOIN 
-                       product_template prod_tmpl on prod_tmpl.id=prod.product_tmpl_id
-                   LEFT JOIN 
-                       product_category categ on categ.id=prod_tmpl.categ_id
-                   WHERE 
-                       %s and %s
-                   GROUP BY 
-                       product, prod_categ, location, date_in
-                   ORDER BY 
-                       date_in
-               """
-        return query
+        final_query = f"""with cte_Available_reserved AS 
+                        ({self._get_query_available_reserved(products_ids_in, start_date_string, end_date_string)})
+                        select cte_Available_reserved
+                        
+                        """
+        return final_query
 
     def _get_locations(self, usage, scrap=False):
         query = """
@@ -238,11 +246,13 @@ class ReportStock(models.TransientModel):
         attrib_set = {v[1] for v in attrib_values}
 
     @staticmethod
-    def _get_column_in(column, values):
+    def _get_values_in(values):
         string_value = str(tuple(values)).replace(',)', ')')
-        return f" {column} in {string_value}"
+        return string_value
+        # return f" {column} in {string_value}"
 
-    def add_workbook_format(self, workbook):
+    @staticmethod
+    def _add_workbook_format(workbook):
 
         ### Define colors
         colors = {
