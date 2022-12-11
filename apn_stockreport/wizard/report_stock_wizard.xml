@@ -1,0 +1,42 @@
+<odoo>
+	<data>
+	
+	    <record id="apn_report_stock_form_view" model="ir.ui.view">
+			<field name="name">apn.report.stock.form</field>
+			<field name="model">apn.report.stock</field>
+			<field name="type">form</field>
+			<field name="arch" type="xml">
+				
+		        <form string="Stock Report">
+	                <group>
+		        		<group>
+		                    <field name="product_ids" widget="many2many_tags" options="{'no_create':True, 'no_open':True}"/>
+		                </group>
+		                <group>
+							<field name="start_date" />
+							<field name="end_date"/>
+		                </group>
+		        	</group>
+
+	                <footer>
+	                    <button name="print_excel_report" string="Export" type="object" class="oe_highlight"/> or 
+	                    <button string="Cancel" class="oe_link" special="cancel"/>
+	                </footer>
+		          	
+		        </form>
+	    	</field>
+	    </record>
+		
+	    <record id="apn_action_report_stock_xlsx" model="ir.actions.act_window">
+			<field name="name">Stock Report</field>
+			<field name="type">ir.actions.act_window</field>
+			<field name="res_model">apn.report.stock</field>
+			<field name="view_mode">form</field>
+			<field name="view_id" ref="apn_report_stock_form_view"/>
+			<field name="target">new</field>
+	    </record>
+		
+		<menuitem id="apn_menu_report_stock_xlsx" action="apn_action_report_stock_xlsx" parent="stock.menu_warehouse_report"/>
+	
+	</data>
+</odoo>
