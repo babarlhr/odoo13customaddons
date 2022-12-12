@@ -137,6 +137,9 @@ class ReportStock(models.TransientModel):
                 elif col_number == 1: # write Full name
                     product_values = products_variants.get((res[col_number - 1]))
                     product_style = product_values[1]
+                    color_size = tuple(product_style.split(","))
+                    color = color_size[0]
+                    size = color_size[1]
                     product_full_name = product_values[2]
                     worksheet.write(row, col_number, product_full_name, cell_format[col_number - 1])
                 elif col_number == 9:  # then Formula Cell.write formula instead
