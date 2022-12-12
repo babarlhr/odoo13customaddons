@@ -45,23 +45,22 @@ class ReportStock(models.TransientModel):
         # ############################ Validation of User provided data ##############
         # ############################ Writing workbook with headers #################
         # ############################ And Cells format styles to sheet ##############
+
         self._validate_data(product_ids, start_date, end_date)
-        products_variants = self._get_product_attributes_variants(product_ids)
+        product_ids, products_variants = self._get_product_attributes_variants(product_ids)
 
         self.fp = BytesIO()
         self.workbook = xlsxwriter.Workbook(self.fp, {'in_memory': True})
-        worksheet, wbf = self._write_headers(report_name, start_date, end_date)
-        cell_format = self._get_cell_format(wbf)
+        worksheet, wbf, data_cell_formats = self._write_headers(report_name, start_date, end_date)
 
         # ########################### Database Operations Get Related Data ###########
         query = self._get_query(product_ids, start_date, end_date)
-        print(query)
         self._cr.execute(query)
         result = self._cr.fetchall()
         # result = (('style code1', 20, 10, 30, 12, 11, 23, 45,), ('style code2', 30, 20, 10, 15, 14, 73, 35,),)
 
         # #############################  Writing Data to Excel ########################
-        last_row = self._write_worksheet_data(worksheet, cell_format, result,products_variants)
+        last_row = self._write_worksheet_data(worksheet, data_cell_formats, result, products_variants)
         self._write_sum_of_columns(worksheet, wbf, last_row)
 
         self.workbook.close()
@@ -78,33 +77,46 @@ class ReportStock(models.TransientModel):
         }
 
     def _get_product_attributes_variants(self, product_ids):
+        if not product_ids:
+            products = self.env['product.product'].search([], order='id asc')
+            product_ids = [prod.id for prod in products]
         products_with_attribute = self.env['product.product'].search([('id', 'in', product_ids)], order='id asc')
-        products_attributes = {} # Store Sorted product with variant names and product names
+        products_attributes = {}  # Store Sorted product with variant names and product names
         for product in products_with_attribute:
             variant = product.product_template_attribute_value_ids._get_combination_name()
             product_name_with_variant = variant and "%s (%s)" % (product.name, variant) or product.name
-            product_info = (product.id, variant, product_name_with_variant)
+            product_info = (product.id, variant, product_name_with_variant, product.default_code)
             products_attributes[product.id] = product_info
-        return products_attributes
+        return product_ids, products_attributes
 
     def _write_headers(self, report_name, start_date, end_date):
-        columns_Headings = [
-            ('No', 5),
-            ('Style Code', 30),
-            ('Opening Balance', 20),
-            ('Received from Production', 30),
-            ('Sales', 30),
-            ('Returns', 30),
-            ('Give Away/Marketing', 30),
-            ('Scrap', 30),
-            ('Reserved', 20),
-            ('Closing Balance', 20)
-        ]
 
         wbf, self.workbook = self._add_workbook_format(self.workbook)
+
+        columns_Headings = [
+            ('No', 5),  # 1
+            ('Style Code', 30),  # 2
+            ('Description', 30),  # 3
+            ('color', 30),  # 4
+            ('size', 30),  # 5
+            ('Opening Balance', 20),  # 6
+            ('Received from Production', 30),  # 7
+            ('Sales', 30),  # 8
+            ('Returns', 30),  # 9
+            ('Give Away/Marketing', 30),  # 10
+            ('Scrap', 30),  # 11
+            ('Reserved', 20),  # 12
+            ('Closing Balance', 20)  # 13
+        ]
+
+        data_cell_formats = (wbf['content'], wbf['content'], wbf['content'],  # 1)No 2)Style Code 3)Description
+                             wbf['content'], wbf['content'], wbf['content'],  # 4)color 5)size 6)Opening Balance
+                             wbf['content'], wbf['content'], wbf['content'],  # 7)Received from Prod 8)Sales 9)Returns
+                             wbf['content'], wbf['content'], wbf['content'], wbf['content'])  # 10) 11) 12) 13)
+
         # if 'Stock Report' not in self.workbook.:
         worksheet = self.workbook.add_worksheet(report_name)
-        worksheet.merge_range('A2:J3', report_name, wbf['title_doc'])
+        worksheet.merge_range('A2:M3', report_name, wbf['title_doc'])
 
         worksheet.write(4, 1, 'From Date', wbf['content'])
         worksheet.write(5, 1, 'To date', wbf['content'])
@@ -120,54 +132,75 @@ class ReportStock(models.TransientModel):
             worksheet.write(row, col, column_name, wbf['header_orange'])
             col += 1
 
-        return worksheet, wbf
+        return worksheet, wbf, data_cell_formats
 
     @api.model
     def get_default_date_model(self):
         return pytz.UTC.localize(datetime.now()).astimezone(timezone(self.env.user.tz or 'UTC'))
 
     @staticmethod
-    def _write_worksheet_data(worksheet, cell_format, result, products_variants):
+    def _write_worksheet_data(worksheet, data_cell_formats, result, products_variants):
         row = 10
         no = 1
         for res in result:
-            for col_number in range(10):
+            # Product_id on 4 index in res. it will match in products_variants dictionary with same "product_id" key
+            # and corresponding tuple will be store in product_values.This Tuple Contains following values
+            # (product.id, variant, product_name_with_variant, product.default_code)
+            product_values = products_variants.get(res[4])
+            product_style = product_values[1]
+            description = product_values[2]
+            style_code = product_values[3]
+            color_size = tuple(product_style.split(","))
+            product_style_code = 0
+            color = ''
+            size = ''
+            if len(color_size) >= 1:
+                color = color_size[0]
+            if len(color_size) >= 2:
+                size = color_size[1]
+            for col_number in range(13):  # 12 columns but one extra column of no in Excel so 12+1 =13
                 if col_number == 0:
-                    worksheet.write(row, col_number, no, cell_format[0])  # Writing Serial Numbers
-                elif col_number == 1: # write Full name
-                    product_values = products_variants.get((res[col_number - 1]))
-                    product_style = product_values[1]
-                    color_size = tuple(product_style.split(","))
-                    color = color_size[0]
-                    size = color_size[1]
-                    product_full_name = product_values[2]
-                    worksheet.write(row, col_number, product_full_name, cell_format[col_number - 1])
-                elif col_number == 9:  # then Formula Cell.write formula instead
+                    worksheet.write(row, col_number, no, data_cell_formats[0])  # Writing Serial Numbers
+                elif col_number == 1:  # style code .internal reference
+                    worksheet.write(row, col_number, style_code, data_cell_formats[col_number])
+                elif col_number == 2:
+                    worksheet.write(row, col_number, description, data_cell_formats[col_number])
+                elif col_number == 3:
+                    worksheet.write(row, col_number, color, data_cell_formats[col_number])
+                elif col_number == 4:
+                    worksheet.write(row, col_number, size, data_cell_formats[col_number])
+                elif col_number == 12:  # Last Column then Formula Cell.write formula instead
                     cell_row = row + 1  # to change from (int,row,int column) to A1,B1 cell format
-                    worksheet.write_formula('J%s' % cell_row,
-                                            '=C%s+D%s-E%s+F%s-G%s-H%s-I%s'
+                    worksheet.write_formula('M%s' % cell_row,
+                                            '=F%s+G%s-H%s+I%s-J%s-K%s-L%s'
                                             % (cell_row, cell_row, cell_row, cell_row, cell_row, cell_row, cell_row)
                                             )
                 else:
-                    # starting from second column Corresponding first value of res.
-                    # first two columns are nos and style name
-                    worksheet.write(row, col_number, res[col_number - 1], cell_format[col_number - 1])
+                    # first five value in columns 0-4
+                    # res = (dummy0,dummy1,dummy2,dummy3,not_used_value, value, 2, 5.0, 0.0, 4, 1.0, 0.0)
+                    # res = (Prod_id,opening_balance,received_from_production,sales,returns,Give_Away_Marketing,Scrap,Reserved)
+                    # Excel_columns_length =0-12
+                    #
+                    cell_format = data_cell_formats[col_number]
+                    worksheet.write(row, col_number, res[col_number], cell_format)
             row += 1
             no += 1
         return row
 
     @staticmethod
     def _write_sum_of_columns(worksheet, cell_format, last_row):
-        for col_number in range(10):
-            if not (col_number == 0 or col_number == 1 or col_number == 9 ):
+        for col_number in range(12):
+            if not (col_number == 0 or col_number == 1 or col_number == 2
+                    or col_number == 3 or col_number == 4 or col_number == 12):
                 first_cell = xl_rowcol_to_cell(10, col_number)
                 last_cell = xl_rowcol_to_cell(last_row, col_number)
-                worksheet.write_formula(8, col_number, '=SUM(%s:%s)' % (first_cell, last_cell), cell_format['content_number'])
+                worksheet.write_formula(8, col_number, '=SUM(%s:%s)' % (first_cell, last_cell),
+                                        cell_format['content_number'])
 
     @staticmethod
     def _validate_data(product_ids, start_date, end_date):
-        if not product_ids:
-            raise ValueError(_("Please Choose at least one product!"))
+        # if not product_ids:
+        #     raise ValueError(_("Please Choose at least one product!"))
         if not start_date:
             raise ValidationError(_("Please choose Start Date!"))
         if not end_date:
@@ -185,7 +218,6 @@ class ReportStock(models.TransientModel):
     def _get_storable_products(self, product_ids=None):
         if not product_ids:
             product_ids = self.env['product.product'].search().id
-        print("Product ids = ", product_ids)
         storable_components = self.env['product.product'].search(
             [('id', 'in', list(product_ids)), ('type', '=', 'product')])
         return storable_components
@@ -269,27 +301,31 @@ class ReportStock(models.TransientModel):
                             ),
                             
                             cte_available_reserved AS (
-                            {self._get_query_available_reserved(products_ids_in,start_date_string,end_date_string)}
+                            {self._get_query_available_reserved(products_ids_in, start_date_string, end_date_string)}
                             ),
                             
                             cte_scrap AS (
-                            {self._get_query_scrap_qty(products_ids_in,start_date_string,end_date_string)}
+                            {self._get_query_scrap_qty(products_ids_in, start_date_string, end_date_string)}
                             ),
                             
                             cte_sales_order_qty AS (
-                            {self._get_query_sale_order_qty(products_ids_in,start_date_string,end_date_string)}
+                            {self._get_query_sale_order_qty(products_ids_in, start_date_string, end_date_string)}
                             ),
                             
                             cte_pos_order_qty AS (
-                            {self._get_query_pos_order_qty(products_ids_in,start_date_string,end_date_string)}
+                            {self._get_query_pos_order_qty(products_ids_in, start_date_string, end_date_string)}
                             ),
                             
                             cte_pos_qty_return AS (
-                            {self._get_query_pos_order_return(products_ids_in,start_date_string,end_date_string)}
+                            {self._get_query_pos_order_return(products_ids_in, start_date_string, end_date_string)}
                             )
                             
                                 
-                            SELECT prod.Prod_id,
+                            SELECT '0dummy' AS col0,
+                            '1dummy' AS col1,
+                            '2dummy' As col2,
+                            '3dummy' AS col3,
+                            prod.Prod_id,
                             COALESCE(avail_reserv.opening_balance,0) AS opening_balance,
                             2 AS received_from_production,
                             -- COALESCE(sales_QTY.sales_QTY,0) AS sales_qty,
@@ -326,25 +362,12 @@ class ReportStock(models.TransientModel):
                     from stock_location 
                     where usage='%s' and scrap_location = %s
                 """
-        # print("Final Query =", query % (usage, scrap))
         self._cr.execute(query % (usage, scrap))
         result = self._cr.fetchall()
 
-        print("Query Result =", result)
-
         location_ids = self.env['stock.location'].search([('usage', '=', usage), ('scrap_location', '=', scrap)])
         purchase_locations = [loc.id for loc in location_ids]
-        print("Tuples", tuple(location_ids))
         return tuple(purchase_locations)
-
-    @staticmethod
-    def _get_cell_format(wbf):
-        format_tuple = (wbf['content'], wbf['content'], wbf['content'], wbf['content'],
-                        wbf['content'], wbf['content'], wbf['content'], wbf['content'],
-                        wbf['content'], wbf['content'])
-        # number
-
-        return format_tuple
 
     def _get_available_qty(self, start_date):
         product_context = dict(request.env.context, to_date=start_date)
@@ -361,7 +384,6 @@ class ReportStock(models.TransientModel):
     def _get_values_in(values):
         string_value = str(tuple(values)).replace(',)', ')')
         return string_value
-        # return f" {column} in {string_value}"
 
     @staticmethod
     def _add_workbook_format(workbook):
