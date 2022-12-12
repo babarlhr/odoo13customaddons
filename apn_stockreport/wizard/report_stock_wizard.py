@@ -1,4 +1,5 @@
 import xlsxwriter
+from xlsxwriter.utility import xl_rowcol_to_cell
 import base64
 from odoo import fields, models, api, _
 from odoo.exceptions import ValidationError
@@ -54,13 +55,14 @@ class ReportStock(models.TransientModel):
 
         # ########################### Database Operations Get Related Data ###########
         query = self._get_query(product_ids, start_date, end_date)
-        # print(query % (hours, hours, where_product_ids, where_location_ids))
-        # self._cr.execute(query % (hours, hours, where_product_ids, where_location_ids))
-        # result = self._cr.fetchall()
-        result = (('style code1', 20, 10, 30, 12, 11, 23, 45,), ('style code2', 30, 20, 10, 15, 14, 73, 35,),)
+        print(query)
+        self._cr.execute(query)
+        result = self._cr.fetchall()
+        # result = (('style code1', 20, 10, 30, 12, 11, 23, 45,), ('style code2', 30, 20, 10, 15, 14, 73, 35,),)
 
         # #############################  Writing Data to Excel ########################
-        self._write_worksheet_data(worksheet, cell_format, result,products_variants)
+        last_row = self._write_worksheet_data(worksheet, cell_format, result,products_variants)
+        self._write_sum_of_columns(worksheet, wbf, last_row)
 
         self.workbook.close()
         out = base64.b64encode(self.fp.getvalue(), altchars=None)
@@ -102,12 +104,12 @@ class ReportStock(models.TransientModel):
         wbf, self.workbook = self._add_workbook_format(self.workbook)
         # if 'Stock Report' not in self.workbook.:
         worksheet = self.workbook.add_worksheet(report_name)
-        worksheet.merge_range('A2:L3', report_name, wbf['title_doc'])
+        worksheet.merge_range('A2:J3', report_name, wbf['title_doc'])
 
-        worksheet.write(4, 0, 'From Date', wbf['content'])
-        worksheet.write(5, 0, 'To date', wbf['content'])
-        worksheet.write(4, 1, start_date.strftime('%Y-%m-%d %H:%M:%S'), wbf['content_datetime'])
-        worksheet.write(5, 1, end_date.strftime('%Y-%m-%d %H:%M:%S'), wbf['content_datetime'])
+        worksheet.write(4, 1, 'From Date', wbf['content'])
+        worksheet.write(5, 1, 'To date', wbf['content'])
+        worksheet.write(4, 2, start_date.strftime('%Y-%m-%d %H:%M:%S'), wbf['content_datetime'])
+        worksheet.write(5, 2, end_date.strftime('%Y-%m-%d %H:%M:%S'), wbf['content_datetime'])
 
         row = 9
         col = 0
@@ -132,6 +134,11 @@ class ReportStock(models.TransientModel):
             for col_number in range(10):
                 if col_number == 0:
                     worksheet.write(row, col_number, no, cell_format[0])  # Writing Serial Numbers
+                elif col_number == 1: # write Full name
+                    product_values = products_variants.get((res[col_number - 1]))
+                    product_style = product_values[1]
+                    product_full_name = product_values[2]
+                    worksheet.write(row, col_number, product_full_name, cell_format[col_number - 1])
                 elif col_number == 9:  # then Formula Cell.write formula instead
                     cell_row = row + 1  # to change from (int,row,int column) to A1,B1 cell format
                     worksheet.write_formula('J%s' % cell_row,
@@ -144,6 +151,15 @@ class ReportStock(models.TransientModel):
                     worksheet.write(row, col_number, res[col_number - 1], cell_format[col_number - 1])
             row += 1
             no += 1
+        return row
+
+    @staticmethod
+    def _write_sum_of_columns(worksheet, cell_format, last_row):
+        for col_number in range(10):
+            if not (col_number == 0 or col_number == 1 or col_number == 9 ):
+                first_cell = xl_rowcol_to_cell(10, col_number)
+                last_cell = xl_rowcol_to_cell(last_row, col_number)
+                worksheet.write_formula(8, col_number, '=SUM(%s:%s)' % (first_cell, last_cell), cell_format['content_number'])
 
     @staticmethod
     def _validate_data(product_ids, start_date, end_date):
@@ -196,12 +212,42 @@ class ReportStock(models.TransientModel):
 
     @staticmethod
     def _get_query_scrap_qty(products_ids_in, start_date_string, end_date_string):
-        query = f"""SELECT product_id,SUM(scrap_qty) as scrap_Qty from stock_scrap 
+        query = f"""SELECT product_id Prod_id,SUM(scrap_qty) as scrap_Qty from stock_scrap 
                     where state= 'done' AND (DATE(date_done)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
                     AND  product_id in {products_ids_in}
                     GROUP BY product_id
                     ORDER BY product_id
                     """
+        return query
+
+    @staticmethod
+    def _get_query_sale_order_qty(products_ids_in, start_date_string, end_date_string):
+        query = f"""SELECT product_id as  Prod_id , SUM(qty_invoiced) AS sales_QTY FROM sale_order_line 
+                    where invoice_status = 'invoiced'
+                    AND (DATE(create_date)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
+                    AND  product_id IN {products_ids_in}
+                    GROUP BY product_id
+                    ORDER BY product_id"""
+        return query
+
+    @staticmethod
+    def _get_query_pos_order_qty(products_ids_in, start_date_string, end_date_string):
+        query = f""" select product_id AS Prod_id,sum(qty) AS pos_qty  from pos_order_line
+                      where qty >0
+                      AND (DATE(create_date)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
+                      AND  product_id IN {products_ids_in}
+                      GROUP BY product_id
+                      ORDER BY product_id"""
+        return query
+
+    @staticmethod
+    def _get_query_pos_order_return(products_ids_in, start_date_string, end_date_string):
+        query = f"""select product_id AS Prod_id,sum(qty) AS pos_qty_return  from pos_order_line
+                    where qty <0
+                    AND (DATE(create_date)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
+                    AND  product_id IN {products_ids_in}
+                    GROUP BY product_id
+                    ORDER BY product_id"""
         return query
 
     def _get_query(self, product_ids, start_date, end_date):
@@ -225,17 +271,47 @@ class ReportStock(models.TransientModel):
                             
                             cte_scrap AS (
                             {self._get_query_scrap_qty(products_ids_in,start_date_string,end_date_string)}
+                            ),
+                            
+                            cte_sales_order_qty AS (
+                            {self._get_query_sale_order_qty(products_ids_in,start_date_string,end_date_string)}
+                            ),
+                            
+                            cte_pos_order_qty AS (
+                            {self._get_query_pos_order_qty(products_ids_in,start_date_string,end_date_string)}
+                            ),
+                            
+                            cte_pos_qty_return AS (
+                            {self._get_query_pos_order_return(products_ids_in,start_date_string,end_date_string)}
                             )
                             
+                                
                             SELECT prod.Prod_id,
                             COALESCE(avail_reserv.opening_balance,0) AS opening_balance,
-                            COALESCE(avail_reserv.Reserved,0) AS Reserved,
-                            COALESCE(scrap.scrap_Qty,0) AS scrap_Qty
+                            2 AS received_from_production,
+                            -- COALESCE(sales_QTY.sales_QTY,0) AS sales_qty,
+                            --COALESCE(pos_qty.pos_qty,0) AS pos_qty,
+                            (COALESCE(sales_QTY.sales_QTY,0)+ COALESCE(pos_qty.pos_qty,0) ) as sales,
+                            COALESCE(pos_return.pos_qty_return,0) AS returns,
+                            4 AS Give_Away_Marketing,
+                            COALESCE(scrap.scrap_Qty,0) AS Scrap,
+                            --(COALESCE(prod.Prod_id,0)+ COALESCE(scrap_Qty,0) ) as sum,
+                            COALESCE(avail_reserv.Reserved,0) AS Reserved
+                            
+                            
                             FROM  
                             cte_products AS prod
                             LEFT JOIN  
                             cte_available_reserved AS avail_reserv ON avail_reserv.Prod_id = prod.Prod_id
-                            LEFT JOIN cte_scrap AS scrap ON scrap.Prod_id = prod.Prod_id
+                            LEFT JOIN 
+                            cte_scrap AS scrap ON scrap.Prod_id = prod.Prod_id
+                            LEFT JOIN
+                            cte_sales_order_qty AS sales_QTY ON sales_QTY.Prod_id = prod.Prod_id
+                            LEFT JOIN
+                            cte_pos_order_qty AS pos_qty ON pos_qty.Prod_id = prod.Prod_id
+                            LEFT JOIN 
+                            cte_pos_qty_return AS pos_return ON pos_return.Prod_id = prod.Prod_id
+
                             
                         """
         return final_query
@@ -357,6 +433,8 @@ class ReportStock(models.TransientModel):
         wbf['content_number'] = workbook.add_format({'align': 'right', 'num_format': '#,##0', 'font_name': 'Georgia'})
         wbf['content_number'].set_right()
         wbf['content_number'].set_left()
+        wbf['content_number'].set_top()
+        wbf['content_number'].set_bottom()
 
         # Format 12
         wbf['content_percent'] = workbook.add_format({'align': 'right', 'num_format': '0.00%', 'font_name': 'Georgia'})
