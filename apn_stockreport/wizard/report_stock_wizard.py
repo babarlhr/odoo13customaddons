@@ -138,7 +138,6 @@ class ReportStock(models.TransientModel):
                                             '=C%s+D%s-E%s+F%s-G%s-H%s-I%s'
                                             % (cell_row, cell_row, cell_row, cell_row, cell_row, cell_row, cell_row)
                                             )
-                    pass
                 else:
                     # starting from second column Corresponding first value of res.
                     # first two columns are nos and style name
@@ -173,6 +172,11 @@ class ReportStock(models.TransientModel):
         return storable_components
 
     @staticmethod
+    def _get_query_products(products_ids_in):
+        query = f"""SELECT ID AS Prod_id FROM product_product WHERE id IN {products_ids_in} ORDER BY ID"""
+        return query
+
+    @staticmethod
     def _get_query_available_reserved(products_ids_in, start_date_string, end_date_string):
         query = f"""select prod.id AS Prod_id,
                             SUM(quant.quantity)  AS opening_balance, --On Hand
@@ -190,6 +194,16 @@ class ReportStock(models.TransientModel):
                             ORDER BY prod.id"""
         return query
 
+    @staticmethod
+    def _get_query_scrap_qty(products_ids_in, start_date_string, end_date_string):
+        query = f"""SELECT product_id,SUM(scrap_qty) as scrap_Qty from stock_scrap 
+                    where state= 'done' AND (DATE(date_done)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
+                    AND  product_id in {products_ids_in}
+                    GROUP BY product_id
+                    ORDER BY product_id
+                    """
+        return query
+
     def _get_query(self, product_ids, start_date, end_date):
 
         purchase_locations = self._get_locations('supplier')
@@ -200,10 +214,29 @@ class ReportStock(models.TransientModel):
         start_date_string = start_date.strftime("%Y-%m-%d")
         end_date_string = end_date.strftime("%Y-%m-%d")
 
-        final_query = f"""with cte_Available_reserved AS 
-                        ({self._get_query_available_reserved(products_ids_in, start_date_string, end_date_string)})
-                        select cte_Available_reserved
-                        
+        final_query = f"""WITH 
+                            cte_products AS (
+                            {self._get_query_products(products_ids_in)}
+                            ),
+                            
+                            cte_available_reserved AS (
+                            {self._get_query_available_reserved(products_ids_in,start_date_string,end_date_string)}
+                            ),
+                            
+                            cte_scrap AS (
+                            {self._get_query_scrap_qty(products_ids_in,start_date_string,end_date_string)}
+                            )
+                            
+                            SELECT prod.Prod_id,
+                            COALESCE(avail_reserv.opening_balance,0) AS opening_balance,
+                            COALESCE(avail_reserv.Reserved,0) AS Reserved,
+                            COALESCE(scrap.scrap_Qty,0) AS scrap_Qty
+                            FROM  
+                            cte_products AS prod
+                            LEFT JOIN  
+                            cte_available_reserved AS avail_reserv ON avail_reserv.Prod_id = prod.Prod_id
+                            LEFT JOIN cte_scrap AS scrap ON scrap.Prod_id = prod.Prod_id
+                            
                         """
         return final_query
 
