@@ -285,6 +285,24 @@ class ReportStock(models.TransientModel):
                     ORDER BY product_id"""
         return query
 
+    @staticmethod
+    def _get_query_received_from_production(products_ids_in, start_date_string, end_date_string):
+        query = f"""select product_id AS Prod_id,SUM(product_uom_qty) AS production_qty
+                               from stock_move 
+                               WHERE  product_id in {products_ids_in}
+                               AND (DATE(DATE)  BETWEEN '{start_date_string}' AND '{end_date_string}')  
+                               AND location_id in 
+                               (select id from stock_LOCATION where Lower(NAME) LIKE Lower('%production%') AND usage ='production' and active= TRue) 
+                               AND  location_dest_id in 
+                               (select id from stock_LOCATION where Lower(NAME) LIKE lower('stock'))
+                               GROUP BY product_id
+                               ORDER BY product_id"""
+        return query
+
+    @staticmethod
+    def _get_query_give_away_marketing_qty(products_ids_in, start_date_string, end_date_string):
+        pass
+
     def _get_query(self, product_ids, start_date, end_date):
 
         purchase_locations = self._get_locations('supplier')
@@ -318,6 +336,14 @@ class ReportStock(models.TransientModel):
                             
                             cte_pos_qty_return AS (
                             {self._get_query_pos_order_return(products_ids_in, start_date_string, end_date_string)}
+                            ),
+                             
+                            cte_received_from_production AS  (
+                            {self._get_query_received_from_production(products_ids_in,start_date_string,end_date_string)}
+                            ),
+                            
+                            cte_give_away_marketing_qty AS (
+                            {self._get_query_give_away_marketing_qty(products_ids_in,start_date_string,end_date_string)}
                             )
                             
                                 
@@ -327,7 +353,7 @@ class ReportStock(models.TransientModel):
                             '3dummy' AS col3,
                             prod.Prod_id,
                             COALESCE(avail_reserv.opening_balance,0) AS opening_balance,
-                            2 AS received_from_production,
+                            COALESCE(production.production_qty,0) AS received_from_production,
                             -- COALESCE(sales_QTY.sales_QTY,0) AS sales_qty,
                             --COALESCE(pos_qty.pos_qty,0) AS pos_qty,
                             (COALESCE(sales_QTY.sales_QTY,0)+ COALESCE(pos_qty.pos_qty,0) ) as sales,
@@ -350,10 +376,13 @@ class ReportStock(models.TransientModel):
                             cte_pos_order_qty AS pos_qty ON pos_qty.Prod_id = prod.Prod_id
                             LEFT JOIN 
                             cte_pos_qty_return AS pos_return ON pos_return.Prod_id = prod.Prod_id
+                            LEFT JOIN 
+                            cte_received_from_production AS production on production.Prod_id = prod.Prod_id
 
                             
                         """
         return final_query
+
 
     def _get_locations(self, usage, scrap=False):
         query = """
@@ -366,8 +395,8 @@ class ReportStock(models.TransientModel):
         result = self._cr.fetchall()
 
         location_ids = self.env['stock.location'].search([('usage', '=', usage), ('scrap_location', '=', scrap)])
-        purchase_locations = [loc.id for loc in location_ids]
-        return tuple(purchase_locations)
+        locations = [loc.id for loc in location_ids]
+        return tuple(locations)
 
     def _get_available_qty(self, start_date):
         product_context = dict(request.env.context, to_date=start_date)
