@@ -239,10 +239,15 @@ class ReportStock(models.TransientModel):
                             stock_location loc on loc.id=quant.location_id
                             WHERE 
                             (DATE(in_date)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
-                            AND loc.usage ='internal' 
-                            AND  prod.id in {products_ids_in}
-                            AND substring(date_part('year',NOW())::TEXT from 3 FOR 4)  
+                            AND substring(
+                            date_part('year',NOW())::TEXT 
+                            from 3 FOR 4
+                            )  
                             < '24'
+                            AND 
+                            loc.usage ='internal' 
+                            AND  
+                            prod.id in {products_ids_in}                          
                             GROUP BY prod.id
                             ORDER BY prod.id"""
         return query
@@ -250,10 +255,12 @@ class ReportStock(models.TransientModel):
     @staticmethod
     def _get_query_scrap_qty(products_ids_in, start_date_string, end_date_string):
         query = f"""SELECT product_id Prod_id,SUM(scrap_qty) as scrap_Qty from stock_scrap 
-                    where state= 'done' AND (DATE(date_done)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
-                    AND  product_id in {products_ids_in}
-                    AND substring(date_part('year',NOW())::TEXT from 3 FOR 4) 
-                     < '24'
+                    where state= 'done' AND (DATE(date_done)  BETWEEN '{start_date_string}' AND '{end_date_string}')
+                    AND substring(
+                    date_part('year',NOW())::TEXT 
+                    from 3 FOR 4) 
+                     < '24' 
+                    AND  product_id in {products_ids_in}                    
                     GROUP BY product_id
                     ORDER BY product_id
                     """
@@ -264,9 +271,11 @@ class ReportStock(models.TransientModel):
         query = f"""SELECT product_id as  Prod_id , SUM(qty_invoiced) AS sales_QTY FROM sale_order_line 
                     where invoice_status = 'invoiced'
                     AND (DATE(create_date)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
-                    AND  product_id IN {products_ids_in}
-                    AND substring(date_part('year',NOW())::TEXT from 3 FOR 4) 
+                    AND substring(
+                    date_part('year',NOW())::TEXT 
+                    from 3 FOR 4) 
                      < '24'
+                    AND  product_id IN {products_ids_in}                    
                     GROUP BY product_id
                     ORDER BY product_id"""
         return query
@@ -276,9 +285,11 @@ class ReportStock(models.TransientModel):
         query = f""" select product_id AS Prod_id,sum(qty) AS pos_qty  from pos_order_line
                       where qty >0
                       AND (DATE(create_date)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
-                      AND  product_id IN {products_ids_in}
-                      AND substring(date_part('year',NOW())::TEXT from 3 FOR 4)  
+                      AND substring(
+                      date_part('year',NOW())::TEXT 
+                      from 3 FOR 4)  
                       < '24'
+                      AND  product_id IN {products_ids_in}                      
                       GROUP BY product_id
                       ORDER BY product_id"""
         return query
@@ -287,10 +298,12 @@ class ReportStock(models.TransientModel):
     def _get_query_pos_order_return(products_ids_in, start_date_string, end_date_string):
         query = f"""select product_id AS Prod_id,sum(qty) AS pos_qty_return  from pos_order_line
                     where qty <0
-                    AND (DATE(create_date)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
-                    AND  product_id IN {products_ids_in}
-                    AND substring(date_part('year',NOW())::TEXT from 3 FOR 4)  
-                    < '24'
+                    AND (DATE(create_date)  BETWEEN '{start_date_string}' AND '{end_date_string}')
+                    AND substring(
+                    date_part('year',NOW())::TEXT
+                     from 3 FOR 4)  
+                    < '24' 
+                    AND  product_id IN {products_ids_in}                    
                     GROUP BY product_id
                     ORDER BY product_id"""
         return query
@@ -305,7 +318,9 @@ class ReportStock(models.TransientModel):
                                (select id from stock_LOCATION where Lower(NAME) LIKE Lower('%production%') AND usage ='production' and active= TRue) 
                                AND  location_dest_id in 
                                (select id from stock_LOCATION where Lower(NAME) LIKE lower('stock'))
-                               AND substring(date_part('year',NOW())::TEXT from 3 FOR 4)  
+                               AND substring(
+                               date_part('year',NOW())::TEXT
+                                from 3 FOR 4)  
                                < '24'
                                GROUP BY product_id
                                ORDER BY product_id"""
@@ -313,7 +328,21 @@ class ReportStock(models.TransientModel):
 
     @staticmethod
     def _get_query_give_away_marketing_qty(products_ids_in, start_date_string, end_date_string):
-        pass
+        query= f"""
+                    select product_id AS Prod_id,SUM(product_uom_qty) AS marketing_qty
+                    from stock_move 
+                    where  product_id in {products_ids_in}
+                    AND (DATE(DATE)  BETWEEN '{start_date_string}' AND '{end_date_string}')  
+                    AND substring(
+                    date_part('year',NOW())::TEXT 
+                    from 3 FOR 4)
+                      < '24'
+                    AND  location_dest_id in (1765,1762)
+                    
+                    GROUP BY product_id
+                    ORDER BY product_id
+                    """
+        return query
 
     def _get_query(self, product_ids, start_date, end_date):
 
@@ -325,7 +354,7 @@ class ReportStock(models.TransientModel):
         start_date_string = start_date.strftime("%Y-%m-%d")
         end_date_string = end_date.strftime("%Y-%m-%d")
 
-        final_query = f"""WITH 
+        query = f"""WITH 
                             cte_products AS (
                             {self._get_query_products(products_ids_in)}
                             ),
@@ -370,7 +399,7 @@ class ReportStock(models.TransientModel):
                             --COALESCE(pos_qty.pos_qty,0) AS pos_qty,
                             (COALESCE(sales_QTY.sales_QTY,0)+ COALESCE(pos_qty.pos_qty,0) ) as sales,
                             COALESCE(pos_return.pos_qty_return,0) AS returns,
-                            4 AS Give_Away_Marketing,
+                            COALESCE(marketing.marketing_qty,0) AS Give_Away_Marketing,
                             COALESCE(scrap.scrap_Qty,0) AS Scrap,
                             --(COALESCE(prod.Prod_id,0)+ COALESCE(scrap_Qty,0) ) as sum,
                             COALESCE(avail_reserv.Reserved,0) AS Reserved
@@ -390,11 +419,10 @@ class ReportStock(models.TransientModel):
                             cte_pos_qty_return AS pos_return ON pos_return.Prod_id = prod.Prod_id
                             LEFT JOIN 
                             cte_received_from_production AS production on production.Prod_id = prod.Prod_id
-
-                            
+                            LEFT JOIN 
+                            cte_give_away_marketing_qty AS marketing on marketing.Prod_id = prod.Prod_id                            
                         """
-        return final_query
-
+        return query
 
     def _get_locations(self, usage, scrap=False):
         query = """
