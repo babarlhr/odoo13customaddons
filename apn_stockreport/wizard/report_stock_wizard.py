@@ -449,6 +449,26 @@ class ReportStock(models.TransientModel):
         attrib_values = [[int(x) for x in v.split("-")] for v in attrib_list if v]
         attrib_set = {v[1] for v in attrib_values}
 
+    def _compute_qty_returned(self, product_id):
+
+
+        for line in self:
+            qty_returned = 0
+            qty = 0.0
+            if line.qty_delivered_method == "stock_move":
+                _, incoming_moves = line._get_outgoing_incoming_moves()
+                for move in incoming_moves:
+                    if move.state != "done":
+                        continue
+                    qty += move.product_uom._compute_quantity(
+                        move.product_uom_qty,
+                        line.product_uom,
+                        rounding_method="HALF-UP",
+                    )
+            qty_returned = qty
+            return qty_returned
+
+
     @staticmethod
     def _get_values_in(values):
         string_value = str(tuple(values)).replace(',)', ')')
