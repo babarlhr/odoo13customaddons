@@ -237,17 +237,16 @@ class ReportStock(models.TransientModel):
         return query
 
     @staticmethod
-    def _get_query_available_reserved(products_ids_in, start_date_string, end_date_string):
+    def _get_query_available(products_ids_in, start_date_string, end_date_string):
         query = f"""select prod.id AS Prod_id,
-                            SUM(quant.quantity)  AS opening_balance, --On Hand
-                            SUM(quant.reserved_quantity) AS Reserved --reserved
+                            SUM(quant.quantity)  AS opening_balance --On Hand
                             FROM product_product prod
                             LEFT JOIN 
                             stock_quant quant  on prod.id=quant.product_id
                             LEFT JOIN 
                             stock_location loc on loc.id=quant.location_id
                             WHERE 
-                            (DATE(in_date)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
+                            (DATE(in_date)  < TO_DATE('{start_date_string}', 'YYYY-MM-DD' ) -1) 
                             AND substring(
                             date_part('year',NOW())::TEXT 
                             from 3 FOR 4
@@ -260,6 +259,31 @@ class ReportStock(models.TransientModel):
                             GROUP BY prod.id
                             ORDER BY prod.id"""
         return query
+
+    @staticmethod
+    def _get_query_reserved(products_ids_in, start_date_string, end_date_string):
+        query = f"""select prod.id AS Prod_id,
+                                   SUM(quant.reserved_quantity) AS Reserved --reserved
+                                   FROM product_product prod
+                                   LEFT JOIN 
+                                   stock_quant quant  on prod.id=quant.product_id
+                                   LEFT JOIN 
+                                   stock_location loc on loc.id=quant.location_id
+                                   WHERE 
+                                   (DATE(in_date)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
+                                   AND substring(
+                                   date_part('year',NOW())::TEXT 
+                                   from 3 FOR 4
+                                   )  
+                                   < '24'
+                                   AND 
+                                   loc.usage ='internal' 
+                                   AND  
+                                   prod.id in {products_ids_in}                          
+                                   GROUP BY prod.id
+                                   ORDER BY prod.id"""
+        return query
+        pass
 
     @staticmethod
     def _get_query_scrap_qty(products_ids_in, start_date_string, end_date_string):
@@ -368,8 +392,8 @@ class ReportStock(models.TransientModel):
                             {self._get_query_products(products_ids_in)}
                             ),
                             
-                            cte_available_reserved AS (
-                            {self._get_query_available_reserved(products_ids_in, start_date_string, end_date_string)}
+                            cte_available AS (
+                            {self._get_query_available(products_ids_in, start_date_string, end_date_string)}
                             ),
                             
                             cte_scrap AS (
@@ -394,6 +418,10 @@ class ReportStock(models.TransientModel):
                             
                             cte_give_away_marketing_qty AS (
                             {self._get_query_give_away_marketing_qty(products_ids_in,start_date_string,end_date_string)}
+                            ),
+                            
+                            cte_query_reserved AS (
+                            {self._get_query_reserved(products_ids_in,start_date_string,end_date_string)}
                             )
                             
                                 
@@ -402,7 +430,7 @@ class ReportStock(models.TransientModel):
                             '2dummy' As col2,
                             '3dummy' AS col3,
                             prod.Prod_id,
-                            COALESCE(avail_reserv.opening_balance,0) AS opening_balance,
+                            COALESCE(available.opening_balance,0) AS opening_balance,
                             COALESCE(production.production_qty,0) AS received_from_production,
                             -- COALESCE(sales_QTY.sales_QTY,0) AS sales_qty,
                             --COALESCE(pos_qty.pos_qty,0) AS pos_qty,
@@ -411,13 +439,13 @@ class ReportStock(models.TransientModel):
                             COALESCE(marketing.marketing_qty,0) AS Give_Away_Marketing,
                             COALESCE(scrap.scrap_Qty,0) AS Scrap,
                             --(COALESCE(prod.Prod_id,0)+ COALESCE(scrap_Qty,0) ) as sum,
-                            COALESCE(avail_reserv.Reserved,0) AS Reserved
+                            COALESCE(reserved.Reserved,0) AS Reserved
                             
                             
                             FROM  
                             cte_products AS prod
                             LEFT JOIN  
-                            cte_available_reserved AS avail_reserv ON avail_reserv.Prod_id = prod.Prod_id
+                            cte_available AS available ON available.Prod_id = prod.Prod_id
                             LEFT JOIN 
                             cte_scrap AS scrap ON scrap.Prod_id = prod.Prod_id
                             LEFT JOIN
@@ -429,8 +457,11 @@ class ReportStock(models.TransientModel):
                             LEFT JOIN 
                             cte_received_from_production AS production on production.Prod_id = prod.Prod_id
                             LEFT JOIN 
-                            cte_give_away_marketing_qty AS marketing on marketing.Prod_id = prod.Prod_id                            
+                            cte_give_away_marketing_qty AS marketing on marketing.Prod_id = prod.Prod_id
+                            LEFT JOIN 
+                            cte_query_reserved AS reserved on reserved.Prod_id = prod.Prod_id                            
                         """
+        print(query)
         return query
 
     def _get_locations(self, usage, scrap=False):
