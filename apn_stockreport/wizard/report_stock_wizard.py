@@ -48,7 +48,8 @@ class ReportStock(models.TransientModel):
 
         self._validate_data(product_ids, start_date, end_date)
         product_ids, products_variants = self._get_product_attributes_variants(product_ids)
-        sales_return = self._sales_qty_returned(product_ids)
+        # sales_return = self._sales_qty_returned(product_ids)
+        sales_return = self._get_query_sales_return_qty_result(product_ids ,start_date ,end_date)
 
         self.fp = BytesIO()
         self.workbook = xlsxwriter.Workbook(self.fp, {'in_memory': True})
@@ -246,14 +247,14 @@ class ReportStock(models.TransientModel):
                             LEFT JOIN 
                             stock_location loc on loc.id=quant.location_id
                             WHERE 
-                            (DATE(in_date)  < TO_DATE('{start_date_string}', 'YYYY-MM-DD' ) -1) 
+                            (DATE(in_date) < '{start_date_string}') --TO_DATE('{start_date_string}', 'YYYY-MM-DD' )) 
                             AND substring(
                             date_part('year',NOW())::TEXT 
                             from 3 FOR 4
                             )  
                             < '24'
                             AND 
-                            loc.usage ='internal' 
+                            loc.usage = 'internal' 
                             AND  
                             prod.id in {products_ids_in}                          
                             GROUP BY prod.id
@@ -287,16 +288,39 @@ class ReportStock(models.TransientModel):
 
     @staticmethod
     def _get_query_scrap_qty(products_ids_in, start_date_string, end_date_string):
-        query = f"""SELECT product_id Prod_id,SUM(scrap_qty) as scrap_Qty from stock_scrap 
-                    where state= 'done' AND (DATE(date_done)  BETWEEN '{start_date_string}' AND '{end_date_string}')
-                    AND substring(
-                    date_part('year',NOW())::TEXT 
-                    from 3 FOR 4) 
-                     < '24' 
-                    AND  product_id in {products_ids_in}                    
-                    GROUP BY product_id
-                    ORDER BY product_id
-                    """
+        # query = f"""SELECT product_id Prod_id,SUM(scrap_qty) as scrap_Qty from stock_scrap
+        #             where state= 'done' AND (DATE(date_done)  BETWEEN '{start_date_string}' AND '{end_date_string}')
+        #             AND substring(
+        #             date_part('year',NOW())::TEXT
+        #             from 3 FOR 4)
+        #              < '24'
+        #             AND product_id in {products_ids_in}
+        #             GROUP BY product_id
+        #             ORDER BY product_id
+        #             """
+
+        query = f"""select prod.id AS Prod_id,
+                                   SUM(quant.quantity)  AS scrap_Qty 
+                                   FROM product_product 
+                                   prod
+                                   LEFT JOIN 
+                                   stock_quant quant  on prod.id=quant.product_id
+                                   LEFT JOIN 
+                                   stock_location loc on loc.id=quant.location_id
+                                   WHERE 
+                                   (DATE(in_date)  BETWEEN '{start_date_string}' AND '{end_date_string}') 
+                                   AND substring(
+                                   date_part('year',NOW())::TEXT 
+                                   from 3 FOR 4
+                                   )  
+                                   < '24'
+                                   AND 
+                                   loc.usage ='inventory' 
+                                   AND loc.scrap_location = TRUE
+                                   AND  
+                                   prod.id in {products_ids_in}                          
+                                   GROUP BY prod.id
+                                   ORDER BY prod.id"""
         return query
 
     @staticmethod
@@ -348,15 +372,16 @@ class ReportStock(models.TransientModel):
                                WHERE  product_id in {products_ids_in}
                                AND (DATE(DATE)  BETWEEN '{start_date_string}' AND '{end_date_string}')  
                                AND location_id in 
-                               (select id from stock_LOCATION where Lower(NAME) LIKE Lower('%production%') AND usage ='production' and active= TRue) 
+                               (select id from stock_LOCATION where Lower(NAME) LIKE Lower('%production%') AND 
+                               usage ='production' and active= TRue) 
                                AND  location_dest_id in 
-                               (select id from stock_LOCATION where Lower(NAME) LIKE lower('stock'))
+                               (select id from stock_LOCATION where usage = 'internal')
                                AND substring(
                                date_part('year',NOW())::TEXT
                                 from 3 FOR 4)  
                                < '24'
                                GROUP BY product_id
-                               ORDER BY product_id"""
+                               ORDER BY product_id """
         return query
 
     @staticmethod
@@ -377,6 +402,35 @@ class ReportStock(models.TransientModel):
                     """
         return query
 
+    # Special case because of AppNvent
+    def _get_query_sales_return_qty_result(self, product_ids, start_date, end_date):
+        products_ids_in = self._get_values_in(product_ids)
+        start_date_string, end_date_string = self._get_date_string(start_date, end_date)
+        sales_returned_qty = {}
+        for product_id in product_ids:
+            sales_returned_qty[product_id] = (product_id, 0,)
+
+        query = f"""
+                          select product_id AS Prod_id,SUM(product_uom_qty) AS sales_return
+                          from stock_move 
+                          where  product_id in {products_ids_in}
+                          AND  reference like 'RO%' AND state ='done'
+                          AND (DATE(DATE)  BETWEEN '{start_date_string}' AND '{end_date_string}')  
+                          AND substring(
+                          date_part('year',NOW())::TEXT 
+                          from 3 FOR 4)
+                            < '24'
+                          GROUP BY product_id
+                          ORDER BY product_id
+                          """
+        self._cr.execute(query)
+        results = self._cr.fetchall()
+        for result in results:
+            product_update = {result[0]: (result[0], result[1],)}
+            sales_returned_qty.update(product_update)
+        return  sales_returned_qty
+        # return query
+
     def _get_query(self, product_ids, start_date, end_date):
 
         # purchase_locations = self._get_locations('supplier')
@@ -386,6 +440,7 @@ class ReportStock(models.TransientModel):
         products_ids_in = self._get_values_in(product_ids)
         start_date_string = start_date.strftime("%Y-%m-%d")
         end_date_string = end_date.strftime("%Y-%m-%d")
+        start_date_string, end_date_string = self._get_date_string(start_date, end_date)
 
         query = f"""WITH 
                             cte_products AS (
@@ -461,7 +516,6 @@ class ReportStock(models.TransientModel):
                             LEFT JOIN 
                             cte_query_reserved AS reserved on reserved.Prod_id = prod.Prod_id                            
                         """
-        print(query)
         return query
 
     def _get_locations(self, usage, scrap=False):
@@ -477,6 +531,12 @@ class ReportStock(models.TransientModel):
         location_ids = self.env['stock.location'].search([('usage', '=', usage), ('scrap_location', '=', scrap)])
         locations = [loc.id for loc in location_ids]
         return tuple(locations)
+
+    @staticmethod
+    def _get_date_string(start_date, end_date):
+        start_date_string = start_date.strftime("%Y-%m-%d")
+        end_date_string = end_date.strftime("%Y-%m-%d")
+        return start_date_string, end_date_string
 
     def _get_available_qty(self, start_date):
         product_context = dict(request.env.context, to_date=start_date)
