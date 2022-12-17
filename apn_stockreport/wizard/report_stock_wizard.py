@@ -27,7 +27,9 @@ class ReportStock(models.TransientModel):
     fp = []
     workbook = []
 
+    # region "All Excel Functions"
     def print_excel_report(self):
+
         # ########################### getting data from user form #####################
         data = self.read()[0]
         product_ids = data['product_ids']
@@ -49,7 +51,7 @@ class ReportStock(models.TransientModel):
         self._validate_data(product_ids, start_date, end_date)
         product_ids, products_variants = self._get_product_attributes_variants(product_ids)
         # sales_return = self._sales_qty_returned(product_ids)
-        sales_return = self._get_query_sales_return_qty_result(product_ids ,start_date ,end_date)
+        sales_return = self._get_query_sales_return_qty_result(product_ids, start_date, end_date)
 
         self.fp = BytesIO()
         self.workbook = xlsxwriter.Workbook(self.fp, {'in_memory': True})
@@ -77,19 +79,6 @@ class ReportStock(models.TransientModel):
             'url': 'web/content/?model=' + self._name + '&id=' + str(
                 self.id) + '&field=datas&download=true&filename=' + filename,
         }
-
-    def _get_product_attributes_variants(self, product_ids):
-        if not product_ids:
-            products = self.env['product.product'].search([], order='id asc')
-            product_ids = [prod.id for prod in products]
-        products_with_attribute = self.env['product.product'].search([('id', 'in', product_ids)], order='id asc')
-        products_attributes = {}  # Store Sorted product with variant names and product names
-        for product in products_with_attribute:
-            variant = product.product_template_attribute_value_ids._get_combination_name()
-            product_name_with_variant = variant and "%s (%s)" % (product.name, variant) or product.name
-            product_info = (product.id, variant, product_name_with_variant, product.default_code)
-            products_attributes[product.id] = product_info
-        return product_ids, products_attributes
 
     def _write_headers(self, report_name, start_date, end_date):
 
@@ -136,10 +125,6 @@ class ReportStock(models.TransientModel):
 
         return worksheet, wbf, data_cell_formats
 
-    @api.model
-    def get_default_date_model(self):
-        return pytz.UTC.localize(datetime.now()).astimezone(timezone(self.env.user.tz or 'UTC'))
-
     @staticmethod
     def _write_worksheet_data(worksheet, data_cell_formats, result, products_variants, sales_return):
         row = 10
@@ -161,7 +146,7 @@ class ReportStock(models.TransientModel):
                 size = color_size[0]
             if len(color_size) >= 2:
                 color = color_size[1]
-            for col_number in range(13): # 12 columns but one extra column of no in Excel so 12+1 =13
+            for col_number in range(13):  # 12 columns but one extra column of no in Excel so 12+1 =13
                 if col_number == 0:
                     worksheet.write(row, col_number, no, data_cell_formats[0])  # Writing Serial Numbers
                 elif col_number == 1:  # style code .internal reference
@@ -207,31 +192,9 @@ class ReportStock(models.TransientModel):
                 worksheet.write_formula(8, col_number, '=SUM(%s:%s)' % (first_cell, last_cell),
                                         cell_format['content_number'])
 
-    @staticmethod
-    def _validate_data(product_ids, start_date, end_date):
-        # if not product_ids:
-        #     raise ValueError(_("Please Choose at least one product!"))
-        if not start_date:
-            raise ValidationError(_("Please choose Start Date!"))
-        if not end_date:
-            raise ValidationError(_("Please Choose End Date!"))
-        if start_date > datetime.today().date():
-            raise ValidationError(_("Start date cannot be greater than current date!"))
-        if end_date > datetime.today().date():
-            raise ValidationError(_("End date cannot be greater than current date!"))
-        if start_date > end_date:
-            raise ValidationError(_("Start Date cannot be Greater Than End Date"))
+    # endregion
 
-    def _get_internal_transfer_locations(self):
-        pass
-
-    def _get_storable_products(self, product_ids=None):
-        if not product_ids:
-            product_ids = self.env['product.product'].search().id
-        storable_components = self.env['product.product'].search(
-            [('id', 'in', list(product_ids)), ('type', '=', 'product')])
-        return storable_components
-
+    # region "All Queries"
     @staticmethod
     def _get_query_products(products_ids_in):
         query = f"""SELECT ID AS Prod_id FROM product_product WHERE id IN {products_ids_in} ORDER BY ID"""
@@ -386,7 +349,7 @@ class ReportStock(models.TransientModel):
 
     @staticmethod
     def _get_query_give_away_marketing_qty(products_ids_in, start_date_string, end_date_string):
-        query= f"""
+        query = f"""
                     select product_id AS Prod_id,SUM(product_uom_qty) AS marketing_qty
                     from stock_move 
                     where  product_id in {products_ids_in}
@@ -396,13 +359,12 @@ class ReportStock(models.TransientModel):
                     from 3 FOR 4)
                       < '24'
                     AND  location_dest_id in (1765,1762)
-                    
+
                     GROUP BY product_id
                     ORDER BY product_id
                     """
         return query
 
-    # Special case because of AppNvent
     def _get_query_sales_return_qty_result(self, product_ids, start_date, end_date):
         products_ids_in = self._get_values_in(product_ids)
         start_date_string, end_date_string = self._get_date_string(start_date, end_date)
@@ -411,24 +373,24 @@ class ReportStock(models.TransientModel):
             sales_returned_qty[product_id] = (product_id, 0,)
 
         query = f"""
-                          select product_id AS Prod_id,SUM(product_uom_qty) AS sales_return
-                          from stock_move 
-                          where  product_id in {products_ids_in}
-                          AND  reference like 'RO%' AND state ='done'
-                          AND (DATE(DATE)  BETWEEN '{start_date_string}' AND '{end_date_string}')  
-                          AND substring(
-                          date_part('year',NOW())::TEXT 
-                          from 3 FOR 4)
-                            < '24'
-                          GROUP BY product_id
-                          ORDER BY product_id
-                          """
+                           select product_id AS Prod_id,SUM(product_uom_qty) AS sales_return
+                           from stock_move 
+                           where  product_id in {products_ids_in}
+                           AND  reference like 'RO%' AND state ='done'
+                           AND (DATE(DATE)  BETWEEN '{start_date_string}' AND '{end_date_string}')  
+                           AND substring(
+                           date_part('year',NOW())::TEXT 
+                           from 3 FOR 4)
+                             < '24'
+                           GROUP BY product_id
+                           ORDER BY product_id
+                           """
         self._cr.execute(query)
         results = self._cr.fetchall()
         for result in results:
             product_update = {result[0]: (result[0], result[1],)}
             sales_returned_qty.update(product_update)
-        return  sales_returned_qty
+        return sales_returned_qty
         # return query
 
     def _get_query(self, product_ids, start_date, end_date):
@@ -446,40 +408,40 @@ class ReportStock(models.TransientModel):
                             cte_products AS (
                             {self._get_query_products(products_ids_in)}
                             ),
-                            
+
                             cte_available AS (
                             {self._get_query_available(products_ids_in, start_date_string, end_date_string)}
                             ),
-                            
+
                             cte_scrap AS (
                             {self._get_query_scrap_qty(products_ids_in, start_date_string, end_date_string)}
                             ),
-                            
+
                             cte_sales_order_qty AS (
                             {self._get_query_sale_order_qty(products_ids_in, start_date_string, end_date_string)}
                             ),
-                            
+
                             cte_pos_order_qty AS (
                             {self._get_query_pos_order_qty(products_ids_in, start_date_string, end_date_string)}
                             ),
-                            
+
                             cte_pos_qty_return AS (
                             {self._get_query_pos_order_return(products_ids_in, start_date_string, end_date_string)}
                             ),
-                             
+
                             cte_received_from_production AS  (
-                            {self._get_query_received_from_production(products_ids_in,start_date_string,end_date_string)}
+                            {self._get_query_received_from_production(products_ids_in, start_date_string, end_date_string)}
                             ),
-                            
+
                             cte_give_away_marketing_qty AS (
-                            {self._get_query_give_away_marketing_qty(products_ids_in,start_date_string,end_date_string)}
+                            {self._get_query_give_away_marketing_qty(products_ids_in, start_date_string, end_date_string)}
                             ),
-                            
+
                             cte_query_reserved AS (
-                            {self._get_query_reserved(products_ids_in,start_date_string,end_date_string)}
+                            {self._get_query_reserved(products_ids_in, start_date_string, end_date_string)}
                             )
-                            
-                                
+
+
                             SELECT '0dummy' AS col0,
                             '1dummy' AS col1,
                             '2dummy' As col2,
@@ -495,8 +457,8 @@ class ReportStock(models.TransientModel):
                             COALESCE(scrap.scrap_Qty,0) AS Scrap,
                             --(COALESCE(prod.Prod_id,0)+ COALESCE(scrap_Qty,0) ) as sum,
                             COALESCE(reserved.Reserved,0) AS Reserved
-                            
-                            
+
+
                             FROM  
                             cte_products AS prod
                             LEFT JOIN  
@@ -518,63 +480,47 @@ class ReportStock(models.TransientModel):
                         """
         return query
 
-    def _get_locations(self, usage, scrap=False):
-        query = """
-                    select id 
-                   -- ,name,complete_name,usage,scrap_location 
-                    from stock_location 
-                    where usage='%s' and scrap_location = %s
-                """
-        self._cr.execute(query % (usage, scrap))
-        result = self._cr.fetchall()
+    # endregion
 
-        location_ids = self.env['stock.location'].search([('usage', '=', usage), ('scrap_location', '=', scrap)])
-        locations = [loc.id for loc in location_ids]
-        return tuple(locations)
+    # region "Helper Functions"
+    @staticmethod
+    def _validate_data(product_ids, start_date, end_date):
+        # if not product_ids:
+        #     raise ValueError(_("Please Choose at least one product!"))
+        if not start_date:
+            raise ValidationError(_("Please choose Start Date!"))
+        if not end_date:
+            raise ValidationError(_("Please Choose End Date!"))
+        if start_date > datetime.today().date():
+            raise ValidationError(_("Start date cannot be greater than current date!"))
+        if end_date > datetime.today().date():
+            raise ValidationError(_("End date cannot be greater than current date!"))
+        if start_date > end_date:
+            raise ValidationError(_("Start Date cannot be Greater Than End Date"))
+
+    def _get_product_attributes_variants(self, product_ids):
+        if not product_ids:
+            products = self.env['product.product'].search([], order='id asc')
+            product_ids = [prod.id for prod in products]
+        products_with_attribute = self.env['product.product'].search([('id', 'in', product_ids)], order='id asc')
+        products_attributes = {}  # Store Sorted product with variant names and product names
+        for product in products_with_attribute:
+            variant = product.product_template_attribute_value_ids._get_combination_name()
+            product_name_with_variant = variant and "%s (%s)" % (product.name, variant) or product.name
+            product_info = (product.id, variant, product_name_with_variant, product.default_code)
+            products_attributes[product.id] = product_info
+        return product_ids, products_attributes
+
+    @staticmethod
+    def _get_values_in(values):
+        string_value = str(tuple(values)).replace(',)', ')')
+        return string_value
 
     @staticmethod
     def _get_date_string(start_date, end_date):
         start_date_string = start_date.strftime("%Y-%m-%d")
         end_date_string = end_date.strftime("%Y-%m-%d")
         return start_date_string, end_date_string
-
-    def _get_available_qty(self, start_date):
-        product_context = dict(request.env.context, to_date=start_date)
-        product_category = request.env['product.public.category']
-
-        # if category:
-        category = product_category.browse().exists()
-
-        attrib_list = request.httprequest.args.getlist('attrib')
-        attrib_values = [[int(x) for x in v.split("-")] for v in attrib_list if v]
-        attrib_set = {v[1] for v in attrib_values}
-
-    def _sales_qty_returned(self, product_ids):
-        sales_returned_qty = {}
-        for product_id in product_ids:
-            sales_returned_qty[product_id] = (product_id, 0,)
-
-        lines = self.env['sale.order.line'].search([('id', 'in', product_ids)], order='id asc')
-        for line in lines:
-            qty = 0.0
-            if line.qty_delivered_method == "stock_move":
-                _, incoming_moves = line._get_outgoing_incoming_moves()
-                for move in incoming_moves:
-                    if move.state != "done":
-                        continue
-                    qty += move.product_uom._compute_quantity(
-                        move.product_uom_qty,
-                        line.product_uom,
-                        rounding_method="HALF-UP",
-                    )
-            product_update = {line.product_id.id: (line.product_id.id, qty,)}
-            sales_returned_qty.update(product_update)
-        return sales_returned_qty
-
-    @staticmethod
-    def _get_values_in(values):
-        string_value = str(tuple(values)).replace(',)', ')')
-        return string_value
 
     @staticmethod
     def _add_workbook_format(workbook):
@@ -750,3 +696,67 @@ class ReportStock(models.TransientModel):
 
         return wbf, workbook
 
+    # endregion
+
+    # region "Extra Functions"
+    @api.model
+    def get_default_date_model(self):
+        return pytz.UTC.localize(datetime.now()).astimezone(timezone(self.env.user.tz or 'UTC'))
+
+    def _get_internal_transfer_locations(self):
+        pass
+
+    def _get_storable_products(self, product_ids=None):
+        if not product_ids:
+            product_ids = self.env['product.product'].search().id
+        storable_components = self.env['product.product'].search(
+            [('id', 'in', list(product_ids)), ('type', '=', 'product')])
+        return storable_components
+
+    def _get_locations(self, usage, scrap=False):
+        query = """
+                       select id 
+                      -- ,name,complete_name,usage,scrap_location 
+                       from stock_location 
+                       where usage='%s' and scrap_location = %s
+                   """
+        self._cr.execute(query % (usage, scrap))
+        result = self._cr.fetchall()
+
+        location_ids = self.env['stock.location'].search([('usage', '=', usage), ('scrap_location', '=', scrap)])
+        locations = [loc.id for loc in location_ids]
+        return tuple(locations)
+
+    def _get_available_qty(self, start_date):
+        product_context = dict(request.env.context, to_date=start_date)
+        product_category = request.env['product.public.category']
+
+        # if category:
+        category = product_category.browse().exists()
+
+        attrib_list = request.httprequest.args.getlist('attrib')
+        attrib_values = [[int(x) for x in v.split("-")] for v in attrib_list if v]
+        attrib_set = {v[1] for v in attrib_values}
+
+    def _sales_qty_returned(self, product_ids):
+        sales_returned_qty = {}
+        for product_id in product_ids:
+            sales_returned_qty[product_id] = (product_id, 0,)
+
+        lines = self.env['sale.order.line'].search([('id', 'in', product_ids)], order='id asc')
+        for line in lines:
+            qty = 0.0
+            if line.qty_delivered_method == "stock_move":
+                _, incoming_moves = line._get_outgoing_incoming_moves()
+                for move in incoming_moves:
+                    if move.state != "done":
+                        continue
+                    qty += move.product_uom._compute_quantity(
+                        move.product_uom_qty,
+                        line.product_uom,
+                        rounding_method="HALF-UP",
+                    )
+            product_update = {line.product_id.id: (line.product_id.id, qty,)}
+            sales_returned_qty.update(product_update)
+        return sales_returned_qty
+    # endregion
